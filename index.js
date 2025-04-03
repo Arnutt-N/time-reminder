@@ -174,8 +174,9 @@ handlers.servertime = bot.onText(/^\/servertime$/, (msg) => {
   
   const serverTimeMessage = `
 ⏰ เวลาของเซิร์ฟเวอร์:
+
 เวลา UTC: ${now.toISOString()}
-เวลาของไทย (คำนวณ): ${thaiTime.toISOString()}
+เวลาของไทย: ${thaiTime.toISOString()}
 Timezone offset: ${now.getTimezoneOffset() / -60} hours
   `
   
@@ -317,6 +318,7 @@ console.log("Bot setup complete, waiting for messages...")
 
 // ตั้งเวลาทดสอบในอีก 2 นาทีข้างหน้า
 const testTime = new Date();
+const testThaiTime = new Date(now.getTime() + 7 * 60 * 60 * 1000)
 testTime.setMinutes(testTime.getMinutes() + 2);
 const testMinute = testTime.getMinutes();
 const testHour = testTime.getHours();
@@ -329,7 +331,7 @@ const testCron = cron.schedule(`${testMinute} ${testHour} * * *`, () => {
   // bot.sendMessage(chatId, "🔔 ทดสอบการแจ้งเตือนตามเวลา - สำเร็จ!");
   
   // ถ้าส่งไปยังกลุ่ม
-  bot.sendMessage(chatId, "🔔 ทดสอบการแจ้งเตือนตามเวลา - สำเร็จ! (เวลาเซิร์ฟเวอร์: " + new Date().toISOString() + ")");
+  bot.sendMessage(chatId, "🔔 ทดสอบการแจ้งเตือนตามเวลา - สำเร็จ!" + "\n\n" + "เวลาเซิร์ฟเวอร์: " + new Date().toISOString() + "\n"+"เวลาของไทย: "+ testThaiTime.toISOString());
   
   // หรือถ้าใช้ฟังก์ชัน broadcast
   // broadcastMessage("🔔 ทดสอบการแจ้งเตือนตามเวลา - สำเร็จ!");
