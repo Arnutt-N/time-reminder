@@ -318,7 +318,7 @@ console.log("Bot setup complete, waiting for messages...")
 
 // ตั้งเวลาทดสอบในอีก 2 นาทีข้างหน้า
 const testTime = new Date();
-const testThaiTime = new Date(now.getTime() + 7 * 60 * 60 * 1000)
+const testThaiTime = new Date(testTime.getTime() + 7 * 60 * 60 * 1000)
 testTime.setMinutes(testTime.getMinutes() + 2);
 const testMinute = testTime.getMinutes();
 const testHour = testTime.getHours();
