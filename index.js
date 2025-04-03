@@ -1,4 +1,4 @@
-// index.js - ปรับแต่งสำหรับ Render
+// index.js - แก้ไขปัญหาเขตเวลา
 const TelegramBot = require("node-telegram-bot-api")
 const cron = require("node-cron")
 const http = require("http")
@@ -38,7 +38,10 @@ function keepAlive() {
 const bot = new TelegramBot(token, { polling: true })
 botInitialized = true
 
-console.log("Bot is running... " + new Date().toISOString())
+// แสดงข้อมูลเวลาปัจจุบันของระบบ
+const currentServerTime = new Date()
+console.log(`Bot is running... Server time: ${currentServerTime.toISOString()}`)
+console.log(`Server timezone offset: ${currentServerTime.getTimezoneOffset() / -60} hours`)
 
 // ฟังก์ชันสำหรับรูปแบบวันที่ เป็น พ.ศ.
 function getThaiDate() {
@@ -75,47 +78,61 @@ try {
   console.log("No existing cron tasks to clear")
 }
 
-// กำหนดเวลาส่งข้อความแจ้งเตือนลงเวลาเข้างาน (7:25 น. ทุกวัน)
-const morningReminder = cron.schedule("25 7 * * *", () => {
-  console.log("Sending check-in reminder (7:25)... " + new Date().toISOString())
+// ===== แก้ไขเวลา cron jobs ให้ตรงกับเวลาประเทศไทย โดยปรับให้เป็นเวลา UTC =====
+// เวลาไทย 7:25 น. = UTC 00:25 น.
+console.log("Setting up check-in reminder cron job for 7:25 AM Thailand time (00:25 UTC)")
+const morningReminder = cron.schedule("25 0 * * *", () => {
+  console.log("Sending check-in reminder (7:25 Thai time)... " + new Date().toISOString())
+  const morningCheckinMessage = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
   bot
-    .sendMessage(chatId, getCheckInReminderMessage())
-    .then(() => console.log("Message sent successfully"))
+    .sendMessage(chatId, morningCheckinMessage)
+    .then(() => console.log("7:25 message sent successfully"))
     .catch((err) => console.error("Error sending message:", err))
 })
 
-// กำหนดเวลาส่งข้อความตอนเช้า (8:25 น. ทุกวัน)
-const morningMessage = cron.schedule("25 8 * * *", () => {
-  console.log("Sending morning message (8:25)... " + new Date().toISOString())
-  const morningFullMessage =
-    getMorningMessage() + "\n\n" + getCheckInReminderMessage()
+// เวลาไทย 8:25 น. = UTC 01:25 น.
+console.log("Setting up morning message cron job for 8:25 AM Thailand time (01:25 UTC)")
+const morningMessage = cron.schedule("25 1 * * *", () => {
+  console.log("Sending morning message (8:25 Thai time)... " + new Date().toISOString())
+  const morningFullMessage = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
   bot
     .sendMessage(chatId, morningFullMessage)
-    .then(() => console.log("Message sent successfully"))
+    .then(() => console.log("8:25 message sent successfully"))
     .catch((err) => console.error("Error sending message:", err))
 })
 
-// กำหนดเวลาส่งข้อความแจ้งเตือนลงเวลาออกงาน (15:25 น. ทุกวัน)
-const eveningReminder = cron.schedule("25 15 * * *", () => {
-  console.log(
-    "Sending check-out reminder (15:25)... " + new Date().toISOString()
-  )
+// เวลาไทย 15:25 น. = UTC 08:25 น.
+console.log("Setting up check-out reminder cron job for 15:25 PM Thailand time (08:25 UTC)")
+const eveningReminder = cron.schedule("25 8 * * *", () => {
+  console.log("Sending check-out reminder (15:25 Thai time)... " + new Date().toISOString())
+  const eveningCheckoutMessage = getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
   bot
-    .sendMessage(chatId, getCheckOutReminderMessage())
-    .then(() => console.log("Message sent successfully"))
+    .sendMessage(chatId, eveningCheckoutMessage)
+    .then(() => console.log("15:25 message sent successfully"))
     .catch((err) => console.error("Error sending message:", err))
 })
 
-// กำหนดเวลาส่งข้อความตอนเย็น (16:25 น. ทุกวัน)
-const eveningMessage = cron.schedule("25 16 * * *", () => {
-  console.log("Sending evening message (16:25)... " + new Date().toISOString())
-  const eveningFullMessage =
-    getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
+// เวลาไทย 16:25 น. = UTC 09:25 น.
+console.log("Setting up evening message cron job for 16:25 PM Thailand time (09:25 UTC)")
+const eveningMessage = cron.schedule("25 9 * * *", () => {
+  console.log("Sending evening message (16:25 Thai time)... " + new Date().toISOString())
+  const eveningFullMessage = getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
   bot
     .sendMessage(chatId, eveningFullMessage)
-    .then(() => console.log("Message sent successfully"))
+    .then(() => console.log("16:25 message sent successfully"))
     .catch((err) => console.error("Error sending message:", err))
 })
+
+// สร้าง cron job ทดสอบทุก 5 นาที (สำหรับทดสอบเท่านั้น - ปิดการทำงานหลังจากทดสอบเสร็จ)
+// console.log("Setting up test cron job for every 5 minutes")
+// const testCron = cron.schedule("*/5 * * * *", () => {
+//   const now = new Date()
+//   console.log(`Test cron job running at server time: ${now.toISOString()}`)
+//   bot
+//     .sendMessage(chatId, `🔔 ทดสอบการแจ้งเตือน - เวลาเซิร์ฟเวอร์: ${now.toISOString()} - แปลงเป็นเวลาไทย: ${new Date(now.getTime() + (7*60*60*1000)).toISOString()}`)
+//     .then(() => console.log("Test message sent successfully"))
+//     .catch((err) => console.error("Error sending test message:", err))
+// })
 
 // เก็บ references ของทุก event handlers เพื่อป้องกันการซ้ำซ้อน
 const handlers = {}
@@ -128,25 +145,44 @@ handlers.start = bot.onText(/^\/start$/, (msg) => {
   const welcomeMessage = `
 สวัสดีครับ/ค่ะ! 👋
 บอทนี้จะส่งข้อความแจ้งเตือนทุกวันในเวลา:
-- ⏰ 7:25 น. (แจ้งเตือนลงเวลาเข้างาน)
-- 🌞 8:25 น. (ข้อความตอนเช้าและแจ้งเตือนลงเวลาเข้างาน)
-- ⏰ 15:25 น. (แจ้งเตือนลงเวลาออกจากงาน)
-- 🌆 16:25 น. (ข้อความตอนเย็นและแจ้งเตือนลงเวลาออกจากงาน)
+- ⏰ 7:25 น. (แจ้งเตือนลงเวลาเข้างาน + ข้อความตอนเช้า)
+- 🌞 8:25 น. (ข้อความตอนเช้า + แจ้งเตือนลงเวลาเข้างาน)
+- ⏰ 15:25 น. (แจ้งเตือนลงเวลาออกจากงาน + ข้อความตอนเย็น)
+- 🌆 16:25 น. (ข้อความตอนเย็น + แจ้งเตือนลงเวลาออกจากงาน)
 
 คำสั่งพื้นฐาน:
 /status - ตรวจสอบสถานะของบอท
+/servertime - ตรวจสอบเวลาของเซิร์ฟเวอร์
 /checkin - ดูข้อความแจ้งเตือนลงเวลาเข้างาน
 /checkout - ดูข้อความแจ้งเตือนลงเวลาออกจากงาน
 /morning - ดูข้อความตอนเช้า
 /evening - ดูข้อความตอนเย็น
-/morning_full - ดูข้อความเต็มของเวลา 8:25 (เช้า+เข้างาน)
-/evening_full - ดูข้อความเต็มของเวลา 16:25 (เย็น+ออกงาน)
+/morning_full - ดูข้อความเต็มของเวลา 7:25 และ 8:25 (เช้า+เข้างาน)
+/evening_full - ดูข้อความเต็มของเวลา 15:25 และ 16:25 (เย็น+ออกงาน)
   `
 
   bot
     .sendMessage(msg.chat.id, welcomeMessage)
     .then(() => console.log("Welcome message sent"))
     .catch((err) => console.error("Error sending welcome message:", err))
+})
+
+// ตรวจสอบเวลาของเซิร์ฟเวอร์
+handlers.servertime = bot.onText(/^\/servertime$/, (msg) => {
+  const now = new Date()
+  const thaiTime = new Date(now.getTime() + (7*60*60*1000))
+  
+  const serverTimeMessage = `
+⏰ เวลาของเซิร์ฟเวอร์:
+เวลา UTC: ${now.toISOString()}
+เวลาของไทย (คำนวณ): ${thaiTime.toISOString()}
+Timezone offset: ${now.getTimezoneOffset() / -60} hours
+  `
+  
+  bot
+    .sendMessage(msg.chat.id, serverTimeMessage)
+    .then(() => console.log("Server time message sent"))
+    .catch((err) => console.error("Error sending server time message:", err))
 })
 
 // ตรวจสอบสถานะบอท
@@ -192,22 +228,20 @@ handlers.evening = bot.onText(/^\/evening$/, (msg) => {
     .catch((err) => console.error("Error sending evening message:", err))
 })
 
-// ทดสอบข้อความแจ้งเตือนตอนเช้าแบบเต็ม (morning + checkin) เหมือนที่จะส่งเวลา 8:25
+// ทดสอบข้อความแจ้งเตือนตอนเช้าแบบเต็ม
 handlers.morningFull = bot.onText(/^\/morning_full$/, (msg) => {
-  const morningFullMessage =
-    getMorningMessage() + "\n\n" + getCheckInReminderMessage()
-  console.log("Sending test morning_full message: ", morningFullMessage)
+  const morningFullMessage = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
+  console.log("Sending test morning_full message")
   bot
     .sendMessage(msg.chat.id, morningFullMessage)
     .then(() => console.log("Morning full message sent successfully"))
     .catch((err) => console.error("Error sending morning full message:", err))
 })
 
-// ทดสอบข้อความแจ้งเตือนตอนเย็นแบบเต็ม (evening + checkout) เหมือนที่จะส่งเวลา 16:25
+// ทดสอบข้อความแจ้งเตือนตอนเย็นแบบเต็ม
 handlers.eveningFull = bot.onText(/^\/evening_full$/, (msg) => {
-  const eveningFullMessage =
-    getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
-  console.log("Sending test evening_full message: ", eveningFullMessage)
+  const eveningFullMessage = getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
+  console.log("Sending test evening_full message")
   bot
     .sendMessage(msg.chat.id, eveningFullMessage)
     .then(() => console.log("Evening full message sent successfully"))
@@ -237,7 +271,8 @@ bot.on("polling_error", (error) => {
 // สร้าง HTTP server สำหรับ Render และใช้ Keep-Alive
 const server = http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" })
-  res.end("Bot is active! " + new Date().toISOString() + "\n")
+  const now = new Date()
+  res.end(`Bot is active! Server time: ${now.toISOString()}\n`)
 })
 
 const PORT = process.env.PORT || 3000
@@ -245,8 +280,8 @@ server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
 })
 
-// ตั้งเวลา keep-alive ทุก 14 นาที (ก่อนที่ Render จะหลับหลังจาก 15 นาที)
-const pingInterval = setInterval(keepAlive, 14 * 60 * 1000)
+// ตั้งเวลา keep-alive ทุก 5 นาที (ปรับจาก 14 นาทีเป็น 5 นาที เพื่อความเสถียร)
+const pingInterval = setInterval(keepAlive, 5 * 60 * 1000)
 
 // จัดการการปิดโปรแกรมอย่างถูกต้อง
 process.on("SIGINT", () => {
