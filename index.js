@@ -310,7 +310,27 @@ process.on("SIGINT", () => {
 console.log("Bot setup complete, waiting for messages...")
 
 // คำสั่งทดสอบการส่งข้อความแจ้งเตือนทันที
-bot.onText(/^\/test_now$/, (msg) => {
-  const chatId = msg.chat.id;
-  bot.sendMessage(chatId, "🔔 ทดสอบการแจ้งเตือนทันที - สำเร็จ!");
+// bot.onText(/^\/test_now$/, (msg) => {
+//   const chatId = msg.chat.id;
+//   bot.sendMessage(chatId, "🔔 ทดสอบการแจ้งเตือนทันที - สำเร็จ!");
+// });
+
+// ตั้งเวลาทดสอบในอีก 2 นาทีข้างหน้า
+const testTime = new Date();
+testTime.setMinutes(testTime.getMinutes() + 2);
+const testMinute = testTime.getMinutes();
+const testHour = testTime.getHours();
+
+console.log(`Setting up test cron for ${testHour}:${testMinute} UTC (${testHour+7}:${testMinute} Thailand time)`);
+const testCron = cron.schedule(`${testMinute} ${testHour} * * *`, () => {
+  console.log(`Test cron executed at ${new Date().toISOString()}`);
+  
+  // ถ้าส่งข้อความส่วนตัว
+  // bot.sendMessage(chatId, "🔔 ทดสอบการแจ้งเตือนตามเวลา - สำเร็จ!");
+  
+  // ถ้าส่งไปยังกลุ่ม
+  bot.sendMessage(chatId, "🔔 ทดสอบการแจ้งเตือนตามเวลา - สำเร็จ! (เวลาเซิร์ฟเวอร์: " + new Date().toISOString() + ")");
+  
+  // หรือถ้าใช้ฟังก์ชัน broadcast
+  // broadcastMessage("🔔 ทดสอบการแจ้งเตือนตามเวลา - สำเร็จ!");
 });
