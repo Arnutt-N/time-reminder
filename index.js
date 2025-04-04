@@ -2,7 +2,12 @@
 const TelegramBot = require("node-telegram-bot-api")
 const cron = require("node-cron")
 const http = require("http")
+const fs = require("fs") // เพิ่มโมดูล fs
+const path = require("path") // เพิ่มโมดูล path
 require("dotenv").config()
+
+// กำหนดไฟล์สำหรับเก็บวันหยุดพิเศษ
+const HOLIDAYS_FILE = path.join(__dirname, "holidays.json")
 
 // นำ token ของ bot มาจาก environment variable
 const token = process.env.TELEGRAM_BOT_TOKEN
@@ -32,6 +37,72 @@ function keepAlive() {
     .on("error", (err) => {
       console.error(`Ping failed: ${err.message}`)
     })
+}
+
+// ฟังก์ชันสำหรับโหลดวันหยุดพิเศษ
+function loadHolidays() {
+  try {
+    if (fs.existsSync(HOLIDAYS_FILE)) {
+      const data = fs.readFileSync(HOLIDAYS_FILE, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.error("Error loading holidays:", err);
+  }
+  // ถ้าไม่มีไฟล์หรือเกิดข้อผิดพลาด ให้สร้างข้อมูลเริ่มต้น
+  return { holidays: [], lastUpdated: new Date().toISOString() };
+}
+
+// ฟังก์ชันสำหรับบันทึกวันหยุดพิเศษ
+function saveHolidays(holidaysData) {
+  try {
+    holidaysData.lastUpdated = new Date().toISOString();
+    fs.writeFileSync(HOLIDAYS_FILE, JSON.stringify(holidaysData, null, 2), 'utf8');
+    console.log(`Saved ${holidaysData.holidays.length} holidays to file`);
+    return true;
+  } catch (err) {
+    console.error("Error saving holidays:", err);
+    return false;
+  }
+}
+
+// ฟังก์ชันแปลงวันที่รูปแบบ DD/MM/YYYY (พ.ศ.) เป็น YYYY-MM-DD (ค.ศ.)
+function thaiDateToISODate(thaiDateStr) {
+  // แยกวันที่จากรูปแบบ DD/MM/YYYY
+  const [day, month, yearBE] = thaiDateStr.split('/').map(num => parseInt(num, 10));
+  // แปลงปี พ.ศ. เป็น ค.ศ.
+  const yearCE = yearBE - 543;
+  // สร้างวันที่ในรูปแบบ YYYY-MM-DD
+  return `${yearCE}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+}
+
+// ฟังก์ชันแปลงวันที่รูปแบบ YYYY-MM-DD (ค.ศ.) เป็น DD/MM/YYYY (พ.ศ.)
+function isoDateToThaiDate(isoDateStr) {
+  // แยกวันที่จากรูปแบบ YYYY-MM-DD
+  const [yearCE, month, day] = isoDateStr.split('-').map(num => parseInt(num, 10));
+  // แปลงปี ค.ศ. เป็น พ.ศ.
+  const yearBE = yearCE + 543;
+  // สร้างวันที่ในรูปแบบ DD/MM/YYYY
+  return `${day.toString().padStart(2, '0')}/${month.toString().padStart(2, '0')}/${yearBE}`;
+}
+
+// โหลดข้อมูลวันหยุดพิเศษเมื่อเริ่มโปรแกรม
+let holidaysData = loadHolidays();
+console.log(`Loaded ${holidaysData.holidays.length} special holidays from file`);
+
+// ฟังก์ชันตรวจสอบว่าวันนี้เป็นวันหยุดหรือไม่
+function isHoliday() {
+  const now = new Date();
+  const day = now.getDay(); // 0 = อาทิตย์, 1 = จันทร์, ..., 6 = เสาร์
+  
+  // ตรวจสอบวันเสาร์-อาทิตย์
+  if (day === 0 || day === 6) {
+    return true;
+  }
+  
+  // ตรวจสอบวันหยุดพิเศษ
+  const today = now.toISOString().split('T')[0]; // รูปแบบ YYYY-MM-DD
+  return holidaysData.holidays.includes(today);
 }
 
 // สร้าง instance ของ bot - ตั้งค่า polling: true เพียงครั้งเดียว
@@ -78,61 +149,92 @@ try {
   console.log("No existing cron tasks to clear")
 }
 
-// ===== แก้ไขเวลา cron jobs ให้ตรงกับเวลาประเทศไทย โดยปรับให้เป็นเวลา UTC =====
-// เวลาไทย 7:25 น. = UTC 00:25 น.
-console.log("Setting up check-in reminder cron job for 7:25 AM Thailand time (00:25 UTC)")
-const morningReminder = cron.schedule("25 0 * * *", () => {
+// ===== แก้ไขเวลา cron jobs ให้ตรงกับเวลาประเทศไทย โดยปรับให้เป็นเวลา UTC และตรวจสอบวันหยุด =====
+// เวลาไทย 7:25 น. = UTC 00:25 น. (จันทร์-ศุกร์)
+console.log("Setting up check-in reminder cron job for 7:25 AM Thailand time (00:25 UTC) - Workdays only")
+const morningReminder = cron.schedule("25 0 * * 1-5", () => {
+  // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
+  if (isHoliday()) {
+    console.log("Today is a holiday. Skipping check-in reminder.");
+    return;
+  }
+  
   console.log("Sending check-in reminder (7:25 Thai time)... " + new Date().toISOString())
   const morningCheckinMessage = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
   bot
     .sendMessage(chatId, morningCheckinMessage)
     .then(() => console.log("7:25 message sent successfully"))
     .catch((err) => console.error("Error sending message:", err))
-})
+});
 
-// เวลาไทย 8:25 น. = UTC 01:25 น.
-console.log("Setting up morning message cron job for 8:25 AM Thailand time (01:25 UTC)")
-const morningMessage = cron.schedule("25 1 * * *", () => {
+// เวลาไทย 8:25 น. = UTC 01:25 น. (จันทร์-ศุกร์)
+console.log("Setting up morning message cron job for 8:25 AM Thailand time (01:25 UTC) - Workdays only")
+const morningMessage = cron.schedule("25 1 * * 1-5", () => {
+  // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
+  if (isHoliday()) {
+    console.log("Today is a holiday. Skipping morning message.");
+    return;
+  }
+  
   console.log("Sending morning message (8:25 Thai time)... " + new Date().toISOString())
   const morningFullMessage = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
   bot
     .sendMessage(chatId, morningFullMessage)
     .then(() => console.log("8:25 message sent successfully"))
     .catch((err) => console.error("Error sending message:", err))
-})
+});
 
-// เวลาไทย 15:25 น. = UTC 08:25 น.
-console.log("Setting up check-out reminder cron job for 15:25 PM Thailand time (08:25 UTC)")
-const eveningReminder = cron.schedule("25 8 * * *", () => {
+// เวลาไทย 15:25 น. = UTC 08:25 น. (จันทร์-ศุกร์)
+console.log("Setting up check-out reminder cron job for 15:25 PM Thailand time (08:25 UTC) - Workdays only")
+const eveningReminder = cron.schedule("25 8 * * 1-5", () => {
+  // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
+  if (isHoliday()) {
+    console.log("Today is a holiday. Skipping check-out reminder.");
+    return;
+  }
+  
   console.log("Sending check-out reminder (15:25 Thai time)... " + new Date().toISOString())
   const eveningCheckoutMessage = getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
   bot
     .sendMessage(chatId, eveningCheckoutMessage)
     .then(() => console.log("15:25 message sent successfully"))
     .catch((err) => console.error("Error sending message:", err))
-})
+});
 
-// เวลาไทย 16:25 น. = UTC 09:25 น.
-console.log("Setting up evening message cron job for 16:25 PM Thailand time (09:25 UTC)")
-const eveningMessage = cron.schedule("25 9 * * *", () => {
+// เวลาไทย 16:25 น. = UTC 09:25 น. (จันทร์-ศุกร์)
+console.log("Setting up evening message cron job for 16:25 PM Thailand time (09:25 UTC) - Workdays only")
+const eveningMessage = cron.schedule("25 9 * * 1-5", () => {
+  // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
+  if (isHoliday()) {
+    console.log("Today is a holiday. Skipping evening message.");
+    return;
+  }
+  
   console.log("Sending evening message (16:25 Thai time)... " + new Date().toISOString())
   const eveningFullMessage = getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
   bot
     .sendMessage(chatId, eveningFullMessage)
     .then(() => console.log("16:25 message sent successfully"))
     .catch((err) => console.error("Error sending message:", err))
-})
+});
 
-// สร้าง cron job ทดสอบทุก 5 นาที (สำหรับทดสอบเท่านั้น - ปิดการทำงานหลังจากทดสอบเสร็จ)
-// console.log("Setting up test cron job for every 5 minutes")
-// const testCron = cron.schedule("*/5 * * * *", () => {
-//   const now = new Date()
-//   console.log(`Test cron job running at server time: ${now.toISOString()}`)
-//   bot
-//     .sendMessage(chatId, `🔔 ทดสอบการแจ้งเตือน - เวลาเซิร์ฟเวอร์: ${now.toISOString()} - แปลงเป็นเวลาไทย: ${new Date(now.getTime() + (7*60*60*1000)).toISOString()}`)
-//     .then(() => console.log("Test message sent successfully"))
-//     .catch((err) => console.error("Error sending test message:", err))
-// })
+// ทดสอบส่งข้อความทุก 2 นาที ปิดเมื่อทดสอบเสร็จแล้ว
+console.log("Setting up test cron job to run every 2 minutes");
+const testCron = cron.schedule("*/2 * * * *", () => {
+  // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
+  if (isHoliday()) {
+    console.log("Today is a holiday. Skipping test message.");
+    return;
+  }
+  
+  const now = new Date();
+  const thaiTime = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+  console.log(`Test cron executed at ${now.toISOString()}`);
+  
+  bot.sendMessage(chatId, "🔔 ทดสอบการแจ้งเตือนทุก 2 นาที - สำเร็จ!" + 
+    "\n\nเวลาเซิร์ฟเวอร์: " + now.toISOString() + 
+    "\nเวลาของไทย: " + thaiTime.toISOString());
+});
 
 // เก็บ references ของทุก event handlers เพื่อป้องกันการซ้ำซ้อน
 const handlers = {}
@@ -150,6 +252,8 @@ handlers.start = bot.onText(/^\/start$/, (msg) => {
 - ⏰ 15:25 น. (แจ้งเตือนลงเวลาออกจากงาน + ข้อความตอนเย็น)
 - 🌆 16:25 น. (ข้อความตอนเย็น + แจ้งเตือนลงเวลาออกจากงาน)
 
+หมายเหตุ: บอทจะไม่ส่งข้อความในวันเสาร์-อาทิตย์และวันหยุดพิเศษ
+
 คำสั่งพื้นฐาน:
 /status - ตรวจสอบสถานะของบอท
 /servertime - ตรวจสอบเวลาของเซิร์ฟเวอร์
@@ -159,6 +263,11 @@ handlers.start = bot.onText(/^\/start$/, (msg) => {
 /evening - ดูข้อความตอนเย็น
 /morning_full - ดูข้อความเต็มของเวลา 7:25 และ 8:25 (เช้า+เข้างาน)
 /evening_full - ดูข้อความเต็มของเวลา 15:25 และ 16:25 (เย็น+ออกงาน)
+/list_holidays - แสดงรายการวันหยุดพิเศษทั้งหมด
+
+คำสั่งสำหรับผู้ดูแลกลุ่มเท่านั้น:
+/add_holiday วัน/เดือน/ปี(พ.ศ.) - เพิ่มวันหยุดพิเศษ (เช่น /add_holiday 1/1/2568)
+/remove_holiday วัน/เดือน/ปี(พ.ศ.) - ลบวันหยุดพิเศษ (เช่น /remove_holiday 1/1/2568)
   `
 
   bot
@@ -247,6 +356,119 @@ handlers.eveningFull = bot.onText(/^\/evening_full$/, (msg) => {
     .then(() => console.log("Evening full message sent successfully"))
     .catch((err) => console.error("Error sending evening full message:", err))
 })
+
+// เพิ่มคำสั่งเพิ่มวันหยุดพิเศษ (สำหรับแอดมินกลุ่มเท่านั้น)
+bot.onText(/^\/add_holiday (.+)$/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  
+  // ตรวจสอบว่าเป็นแอดมินหรือไม่
+  try {
+    const chatMember = await bot.getChatMember(chatId, userId);
+    const isGroupAdmin = ['creator', 'administrator'].includes(chatMember.status);
+    
+    if (isGroupAdmin) {
+      const thaiDateStr = match[1].trim(); // รับวันที่แบบไทยจากคำสั่ง
+      
+      // ตรวจสอบรูปแบบวันที่ (DD/MM/YYYY)
+      if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(thaiDateStr)) {
+        // แปลงวันที่เป็นรูปแบบ ISO (YYYY-MM-DD)
+        const isoDateStr = thaiDateToISODate(thaiDateStr);
+        
+        // ตรวจสอบความถูกต้องของวันที่
+        if (!isNaN(new Date(isoDateStr).getTime())) {
+          // ตรวจสอบว่ามีวันนี้อยู่แล้วหรือไม่
+          if (holidaysData.holidays.includes(isoDateStr)) {
+            bot.sendMessage(chatId, `วันที่ ${thaiDateStr} มีในรายการวันหยุดพิเศษอยู่แล้ว`);
+          } else {
+            // เพิ่มวันหยุดใหม่
+            holidaysData.holidays.push(isoDateStr);
+            holidaysData.holidays.sort(); // เรียงลำดับวันที่
+            
+            // บันทึกลงไฟล์
+            if (saveHolidays(holidaysData)) {
+              bot.sendMessage(chatId, `✅ เพิ่มวันที่ ${thaiDateStr} เป็นวันหยุดพิเศษเรียบร้อยแล้ว`);
+            } else {
+              bot.sendMessage(chatId, `❌ ไม่สามารถบันทึกข้อมูลวันหยุดได้`);
+            }
+          }
+        } else {
+          bot.sendMessage(chatId, `❌ วันที่ไม่ถูกต้อง โปรดตรวจสอบวันที่อีกครั้ง`);
+        }
+      } else {
+        // แจ้งเตือนเมื่อรูปแบบวันที่ไม่ถูกต้อง
+        bot.sendMessage(chatId, `❌ รูปแบบวันที่ไม่ถูกต้อง โปรดใช้รูปแบบ วัน/เดือน/ปี(พ.ศ.) เช่น 1/1/2568`);
+      }
+    } else {
+      // ส่งข้อความกลับเป็น PM เพื่อไม่ให้รบกวนกลุ่ม
+      bot.sendMessage(userId, "⚠️ คำสั่งนี้สำหรับแอดมินเท่านั้น");
+    }
+  } catch (error) {
+    console.error("Error checking admin status:", error);
+    bot.sendMessage(userId, "❌ เกิดข้อผิดพลาดในการตรวจสอบสิทธิ์");
+  }
+});
+
+// เพิ่มคำสั่งลบวันหยุดพิเศษ (สำหรับแอดมินเท่านั้น)
+bot.onText(/^\/remove_holiday (.+)$/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  
+  // ตรวจสอบว่าเป็นแอดมินหรือไม่
+  try {
+    const chatMember = await bot.getChatMember(chatId, userId);
+    const isGroupAdmin = ['creator', 'administrator'].includes(chatMember.status);
+    
+    if (isGroupAdmin) {
+      const thaiDateStr = match[1].trim(); // รับวันที่แบบไทยจากคำสั่ง
+      
+      // ตรวจสอบรูปแบบวันที่ (DD/MM/YYYY)
+      if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(thaiDateStr)) {
+        // แปลงวันที่เป็นรูปแบบ ISO (YYYY-MM-DD)
+        const isoDateStr = thaiDateToISODate(thaiDateStr);
+        
+        // ตรวจสอบว่ามีวันนี้อยู่หรือไม่
+        const index = holidaysData.holidays.indexOf(isoDateStr);
+        if (index !== -1) {
+          // ลบวันหยุด
+          holidaysData.holidays.splice(index, 1);
+          
+          // บันทึกลงไฟล์
+          if (saveHolidays(holidaysData)) {
+            bot.sendMessage(chatId, `✅ ลบวันที่ ${thaiDateStr} ออกจากรายการวันหยุดพิเศษเรียบร้อยแล้ว`);
+          } else {
+            bot.sendMessage(chatId, `❌ ไม่สามารถบันทึกข้อมูลวันหยุดได้`);
+          }
+        } else {
+          bot.sendMessage(chatId, `❓ ไม่พบวันที่ ${thaiDateStr} ในรายการวันหยุดพิเศษ`);
+        }
+      } else {
+        // แจ้งเตือนเมื่อรูปแบบวันที่ไม่ถูกต้อง
+        bot.sendMessage(chatId, `❌ รูปแบบวันที่ไม่ถูกต้อง โปรดใช้รูปแบบ วัน/เดือน/ปี(พ.ศ.) เช่น 1/1/2568`);
+      }
+    } else {
+      // ส่งข้อความกลับเป็น PM เพื่อไม่ให้รบกวนกลุ่ม
+      bot.sendMessage(userId, "⚠️ คำสั่งนี้สำหรับแอดมินเท่านั้น");
+    }
+  } catch (error) {
+    console.error("Error checking admin status:", error);
+    bot.sendMessage(userId, "❌ เกิดข้อผิดพลาดในการตรวจสอบสิทธิ์");
+  }
+});
+
+// เพิ่มคำสั่งแสดงรายการวันหยุดพิเศษทั้งหมด
+bot.onText(/^\/list_holidays$/, (msg) => {
+  const chatId = msg.chat.id;
+  
+  if (holidaysData.holidays.length === 0) {
+    bot.sendMessage(chatId, "ยังไม่มีวันหยุดพิเศษในระบบ");
+  } else {
+    // แปลงวันที่จาก ISO เป็นรูปแบบไทยก่อนแสดงผล
+    const thaiHolidays = holidaysData.holidays.map(isoDate => isoDateToThaiDate(isoDate));
+    const holidayList = thaiHolidays.join('\n');
+    bot.sendMessage(chatId, `📅 รายการวันหยุดพิเศษทั้งหมด (${holidaysData.holidays.length} วัน):\n${holidayList}\n\nปรับปรุงล่าสุด: ${new Date(holidaysData.lastUpdated).toLocaleString('th-TH')}`);
+  }
+});
 
 // จัดการข้อความที่ไม่รู้จัก - ข้ามคำสั่งที่ขึ้นต้นด้วย /
 bot.on("message", (msg) => {
@@ -391,14 +613,6 @@ console.log("Bot setup complete, waiting for messages...")
 //   bot.sendMessage(chatId, "🔔 ทดสอบการแจ้งเตือนทันที - สำเร็จ!");
 // });
 
-// ทดสอบส่งข้อความทุก 2 นาที
-console.log("Setting up test cron job to run every 2 minutes");
-const testCron = cron.schedule("*/2 * * * *", () => {
-  const now = new Date();
-  const thaiTime = new Date(now.getTime() + 7 * 60 * 60 * 1000);
-  console.log(`Test cron executed at ${now.toISOString()}`);
-  
-  bot.sendMessage(chatId, "🔔 ทดสอบการแจ้งเตือนทุก 2 นาที - สำเร็จ!" + 
-    "\n\nเวลาเซิร์ฟเวอร์: " + now.toISOString() + 
-    "\nเวลาของไทย: " + thaiTime.toISOString());
-});
+
+
+
