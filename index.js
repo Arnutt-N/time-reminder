@@ -268,20 +268,96 @@ bot.on("polling_error", (error) => {
   console.error("Polling error:", error)
 })
 
-// สร้าง HTTP server สำหรับ Render และใช้ Keep-Alive
+// ปรับปรุง HTTP server สำหรับ Render และใช้ Keep-Alive
 const server = http.createServer((req, res) => {
-  res.writeHead(200, { "Content-Type": "text/plain" })
-  const now = new Date()
-  res.end(`Bot is active! Server time: ${now.toISOString()}\n`)
-})
+  // บันทึกรายละเอียดคำขอทั้งหมด
+  console.log(`Received HTTP request: ${req.method} ${req.url} from ${req.headers['user-agent'] || 'Unknown'}`);
+  
+  // ทดสอบบอทเมื่อมีการเรียกใช้ HTTP server
+  try {
+    bot.getMe().then(botInfo => {
+      console.log(`Bot is working: ${botInfo.username}`);
+    }).catch(error => {
+      console.error('Bot test failed:', error);
+      // พยายามรีสตาร์ทบอท
+      try {
+        console.log('Attempting to restart bot polling...');
+        bot.stopPolling();
+        setTimeout(() => {
+          bot.startPolling();
+          console.log('Bot polling restarted successfully');
+        }, 2000);
+      } catch (e) {
+        console.error('Failed to restart bot polling:', e);
+      }
+    });
+  } catch (e) {
+    console.error('Error in bot test:', e);
+  }
+  
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  const now = new Date();
+  const thaiTime = new Date(now.getTime() + (7*60*60*1000));
+  res.end(`Bot is active! Server time: ${now.toISOString()}\nThai time: ${thaiTime.toISOString()}\n`);
+});
 
 const PORT = process.env.PORT || 3000
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
 })
 
-// ตั้งเวลา keep-alive ทุก 5 นาที (ปรับจาก 14 นาทีเป็น 5 นาที เพื่อความเสถียร)
-const pingInterval = setInterval(keepAlive, 5 * 60 * 1000)
+// ฟังก์ชัน Keep-Alive สำหรับป้องกันการ "หลับ" บน Render
+function keepAlive() {
+  const now = new Date();
+  console.log("Pinging self to stay awake - " + now.toISOString());
+
+  // ทดสอบบอท
+  try {
+    bot.getMe().then(botInfo => {
+      console.log(`Bot check OK: ${botInfo.username} at ${now.toISOString()}`);
+    }).catch(error => {
+      console.error('Bot check failed:', error);
+      try {
+        bot.stopPolling();
+        setTimeout(() => {
+          bot.startPolling();
+          console.log('Bot polling restarted after failure');
+        }, 2000);
+      } catch (e) {
+        console.error('Failed to restart bot:', e);
+      }
+    });
+  } catch (e) {
+    console.error('Error in bot check:', e);
+  }
+
+  // Ping ตัวเอง
+  try {
+    http
+      .get(appUrl, (res) => {
+        console.log(`Ping status: ${res.statusCode}`);
+      })
+      .on("error", (err) => {
+        console.error(`Ping failed: ${err.message}`);
+      });
+  } catch (err) {
+    console.error('Error in keepAlive function:', err);
+  }
+}
+
+// ลดเวลา ping เหลือ 3 นาที
+const pingInterval = setInterval(keepAlive, 3 * 60 * 1000);
+
+// เพิ่มการจัดการข้อผิดพลาด
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+  // ไม่ควรจบการทำงานของบอท
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  // ไม่ควรจบการทำงานของบอท
+});
 
 // จัดการการปิดโปรแกรมอย่างถูกต้อง
 process.on("SIGINT", () => {
