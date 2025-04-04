@@ -214,27 +214,27 @@ const eveningMessage = cron.schedule("25 9 * * 1-5", () => {
 })
 
 // ทดสอบส่งข้อความทุก 2 นาที ปิดเมื่อทดสอบเสร็จแล้ว
-console.log("Setting up test cron job to run every 2 minutes")
-const testCron = cron.schedule("*/2 * * * *", () => {
-  // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
-  if (isHoliday()) {
-    console.log("Today is a holiday. Skipping test message.")
-    return
-  }
+// console.log("Setting up test cron job to run every 2 minutes")
+// const testCron = cron.schedule("*/2 * * * *", () => {
+//   // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
+//   if (isHoliday()) {
+//     console.log("Today is a holiday. Skipping test message.")
+//     return
+//   }
 
-  const now = new Date()
-  const thaiTime = new Date(now.getTime() + 7 * 60 * 60 * 1000)
-  console.log(`Test cron executed at ${now.toISOString()}`)
+//   const now = new Date()
+//   const thaiTime = new Date(now.getTime() + 7 * 60 * 60 * 1000)
+//   console.log(`Test cron executed at ${now.toISOString()}`)
 
-  bot.sendMessage(
-    chatId,
-    "🔔 ทดสอบการแจ้งเตือนทุก 2 นาที - สำเร็จ!" +
-      "\n\nเวลาเซิร์ฟเวอร์: " +
-      now.toISOString() +
-      "\nเวลาของไทย: " +
-      thaiTime.toISOString()
-  )
-})
+//   bot.sendMessage(
+//     chatId,
+//     "🔔 ทดสอบการแจ้งเตือนทุก 2 นาที - สำเร็จ!" +
+//       "\n\nเวลาเซิร์ฟเวอร์: " +
+//       now.toISOString() +
+//       "\nเวลาของไทย: " +
+//       thaiTime.toISOString()
+//   )
+// })
 
 // เก็บ references ของทุก event handlers เพื่อป้องกันการซ้ำซ้อน
 const handlers = {}
@@ -367,7 +367,7 @@ bot.onText(/^\/list_holidays$/, (msg) => {
     const holidayListItems = holidaysData.holidays.map((isoDate) => {
       const thaiDate = isoDateToThaiDate(isoDate)
       const holidayName = holidaysData.holidayDetails[isoDate] || "วันหยุดพิเศษ"
-      return `- ${thaiDate}   ${holidayName}`
+      return `- ${thaiDate}  ${holidayName}`
     })
 
     const holidayList = holidayListItems.join("\n")
