@@ -43,14 +43,18 @@ function keepAlive() {
 function loadHolidays() {
   try {
     if (fs.existsSync(HOLIDAYS_FILE)) {
-      const data = fs.readFileSync(HOLIDAYS_FILE, 'utf8');
-      return JSON.parse(data);
+      const data = fs.readFileSync(HOLIDAYS_FILE, "utf8")
+      return JSON.parse(data)
     }
   } catch (err) {
-    console.error("Error loading holidays:", err);
+    console.error("Error loading holidays:", err)
   }
   // ถ้าไม่มีไฟล์หรือเกิดข้อผิดพลาด ให้สร้างข้อมูลเริ่มต้น
-  return { holidays: [], lastUpdated: new Date().toISOString() };
+  return {
+    holidays: [], // เก็บข้อมูลวันหยุดแบบเดิม (เฉพาะวันที่)
+    holidayDetails: {}, // เก็บข้อมูลวันหยุดพร้อมชื่อ
+    lastUpdated: new Date().toISOString(),
+  }
 }
 
 // ฟังก์ชันสำหรับบันทึกวันหยุดพิเศษ
@@ -357,118 +361,189 @@ handlers.eveningFull = bot.onText(/^\/evening_full$/, (msg) => {
     .catch((err) => console.error("Error sending evening full message:", err))
 })
 
-// เพิ่มคำสั่งเพิ่มวันหยุดพิเศษ (สำหรับแอดมินกลุ่มเท่านั้น)
+// เพิ่มคำสั่งเพิ่มวันหยุดพิเศษ พร้อมชื่อวันหยุด (สำหรับแอดมินกลุ่มเท่านั้น)
 bot.onText(/^\/add_holiday (.+)$/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  
+  const chatId = msg.chat.id
+  const userId = msg.from.id
+
   // ตรวจสอบว่าเป็นแอดมินหรือไม่
   try {
-    const chatMember = await bot.getChatMember(chatId, userId);
-    const isGroupAdmin = ['creator', 'administrator'].includes(chatMember.status);
-    
+    const chatMember = await bot.getChatMember(chatId, userId)
+    const isGroupAdmin = ["creator", "administrator"].includes(
+      chatMember.status
+    )
+
     if (isGroupAdmin) {
-      const thaiDateStr = match[1].trim(); // รับวันที่แบบไทยจากคำสั่ง
-      
-      // ตรวจสอบรูปแบบวันที่ (DD/MM/YYYY)
-      if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(thaiDateStr)) {
+      const fullInput = match[1].trim()
+
+      // แยกวันที่และชื่อวันหยุด
+      // รูปแบบ: DD/MM/YYYY ชื่อวันหยุด
+      const datePattern = /^(\d{1,2}\/\d{1,2}\/\d{4})(?:\s+(.+))?$/
+      const dateMatch = fullInput.match(datePattern)
+
+      if (dateMatch) {
+        const thaiDateStr = dateMatch[1]
+        const holidayName = dateMatch[2] || "วันหยุดพิเศษ" // ถ้าไม่ระบุชื่อให้ใช้ค่าเริ่มต้น
+
         // แปลงวันที่เป็นรูปแบบ ISO (YYYY-MM-DD)
-        const isoDateStr = thaiDateToISODate(thaiDateStr);
-        
+        const isoDateStr = thaiDateToISODate(thaiDateStr)
+
         // ตรวจสอบความถูกต้องของวันที่
         if (!isNaN(new Date(isoDateStr).getTime())) {
           // ตรวจสอบว่ามีวันนี้อยู่แล้วหรือไม่
           if (holidaysData.holidays.includes(isoDateStr)) {
-            bot.sendMessage(chatId, `วันที่ ${thaiDateStr} มีในรายการวันหยุดพิเศษอยู่แล้ว`);
-          } else {
-            // เพิ่มวันหยุดใหม่
-            holidaysData.holidays.push(isoDateStr);
-            holidaysData.holidays.sort(); // เรียงลำดับวันที่
-            
+            // อัพเดทชื่อวันหยุด
+            holidaysData.holidayDetails[isoDateStr] = holidayName
+
             // บันทึกลงไฟล์
             if (saveHolidays(holidaysData)) {
-              bot.sendMessage(chatId, `✅ เพิ่มวันที่ ${thaiDateStr} เป็นวันหยุดพิเศษเรียบร้อยแล้ว`);
+              bot.sendMessage(
+                chatId,
+                `✅ อัพเดทชื่อวันหยุด ${thaiDateStr} เป็น "${holidayName}" เรียบร้อยแล้ว`
+              )
             } else {
-              bot.sendMessage(chatId, `❌ ไม่สามารถบันทึกข้อมูลวันหยุดได้`);
+              bot.sendMessage(chatId, `❌ ไม่สามารถบันทึกข้อมูลวันหยุดได้`)
+            }
+          } else {
+            // เพิ่มวันหยุดใหม่
+            holidaysData.holidays.push(isoDateStr)
+            holidaysData.holidays.sort() // เรียงลำดับวันที่
+
+            // เพิ่มชื่อวันหยุด
+            holidaysData.holidayDetails[isoDateStr] = holidayName
+
+            // บันทึกลงไฟล์
+            if (saveHolidays(holidaysData)) {
+              bot.sendMessage(
+                chatId,
+                `✅ เพิ่มวันที่ ${thaiDateStr} "${holidayName}" เป็นวันหยุดพิเศษเรียบร้อยแล้ว`
+              )
+            } else {
+              bot.sendMessage(chatId, `❌ ไม่สามารถบันทึกข้อมูลวันหยุดได้`)
             }
           }
         } else {
-          bot.sendMessage(chatId, `❌ วันที่ไม่ถูกต้อง โปรดตรวจสอบวันที่อีกครั้ง`);
+          bot.sendMessage(
+            chatId,
+            `❌ วันที่ไม่ถูกต้อง โปรดตรวจสอบวันที่อีกครั้ง`
+          )
         }
       } else {
         // แจ้งเตือนเมื่อรูปแบบวันที่ไม่ถูกต้อง
-        bot.sendMessage(chatId, `❌ รูปแบบวันที่ไม่ถูกต้อง โปรดใช้รูปแบบ วัน/เดือน/ปี(พ.ศ.) เช่น 1/1/2568`);
+        bot.sendMessage(
+          chatId,
+          `❌ รูปแบบไม่ถูกต้อง โปรดใช้รูปแบบ วัน/เดือน/ปี(พ.ศ.) ชื่อวันหยุด เช่น 7/4/2568 วันหยุดชดเชยวันจักรี`
+        )
       }
     } else {
       // ส่งข้อความกลับเป็น PM เพื่อไม่ให้รบกวนกลุ่ม
-      bot.sendMessage(userId, "⚠️ คำสั่งนี้สำหรับแอดมินเท่านั้น");
+      bot.sendMessage(userId, "⚠️ คำสั่งนี้สำหรับแอดมินเท่านั้น")
     }
   } catch (error) {
-    console.error("Error checking admin status:", error);
-    bot.sendMessage(userId, "❌ เกิดข้อผิดพลาดในการตรวจสอบสิทธิ์");
+    console.error("Error checking admin status:", error)
+    bot.sendMessage(userId, "❌ เกิดข้อผิดพลาดในการตรวจสอบสิทธิ์")
   }
-});
+})
 
 // เพิ่มคำสั่งลบวันหยุดพิเศษ (สำหรับแอดมินเท่านั้น)
 bot.onText(/^\/remove_holiday (.+)$/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  
+  const chatId = msg.chat.id
+  const userId = msg.from.id
+
   // ตรวจสอบว่าเป็นแอดมินหรือไม่
   try {
-    const chatMember = await bot.getChatMember(chatId, userId);
-    const isGroupAdmin = ['creator', 'administrator'].includes(chatMember.status);
-    
+    const chatMember = await bot.getChatMember(chatId, userId)
+    const isGroupAdmin = ["creator", "administrator"].includes(
+      chatMember.status
+    )
+
     if (isGroupAdmin) {
-      const thaiDateStr = match[1].trim(); // รับวันที่แบบไทยจากคำสั่ง
-      
+      const thaiDateStr = match[1].trim() // รับวันที่แบบไทยจากคำสั่ง
+
       // ตรวจสอบรูปแบบวันที่ (DD/MM/YYYY)
       if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(thaiDateStr)) {
         // แปลงวันที่เป็นรูปแบบ ISO (YYYY-MM-DD)
-        const isoDateStr = thaiDateToISODate(thaiDateStr);
-        
+        const isoDateStr = thaiDateToISODate(thaiDateStr)
+
         // ตรวจสอบว่ามีวันนี้อยู่หรือไม่
-        const index = holidaysData.holidays.indexOf(isoDateStr);
+        const index = holidaysData.holidays.indexOf(isoDateStr)
         if (index !== -1) {
           // ลบวันหยุด
-          holidaysData.holidays.splice(index, 1);
-          
+          holidaysData.holidays.splice(index, 1)
+
+          // ลบชื่อวันหยุด
+          if (
+            holidaysData.holidayDetails &&
+            holidaysData.holidayDetails[isoDateStr]
+          ) {
+            delete holidaysData.holidayDetails[isoDateStr]
+          }
+
           // บันทึกลงไฟล์
           if (saveHolidays(holidaysData)) {
-            bot.sendMessage(chatId, `✅ ลบวันที่ ${thaiDateStr} ออกจากรายการวันหยุดพิเศษเรียบร้อยแล้ว`);
+            bot.sendMessage(
+              chatId,
+              `✅ ลบวันที่ ${thaiDateStr} ออกจากรายการวันหยุดพิเศษเรียบร้อยแล้ว`
+            )
           } else {
-            bot.sendMessage(chatId, `❌ ไม่สามารถบันทึกข้อมูลวันหยุดได้`);
+            bot.sendMessage(chatId, `❌ ไม่สามารถบันทึกข้อมูลวันหยุดได้`)
           }
         } else {
-          bot.sendMessage(chatId, `❓ ไม่พบวันที่ ${thaiDateStr} ในรายการวันหยุดพิเศษ`);
+          bot.sendMessage(
+            chatId,
+            `❓ ไม่พบวันที่ ${thaiDateStr} ในรายการวันหยุดพิเศษ`
+          )
         }
       } else {
         // แจ้งเตือนเมื่อรูปแบบวันที่ไม่ถูกต้อง
-        bot.sendMessage(chatId, `❌ รูปแบบวันที่ไม่ถูกต้อง โปรดใช้รูปแบบ วัน/เดือน/ปี(พ.ศ.) เช่น 1/1/2568`);
+        bot.sendMessage(
+          chatId,
+          `❌ รูปแบบวันที่ไม่ถูกต้อง โปรดใช้รูปแบบ วัน/เดือน/ปี(พ.ศ.) เช่น 7/4/2568`
+        )
       }
     } else {
       // ส่งข้อความกลับเป็น PM เพื่อไม่ให้รบกวนกลุ่ม
-      bot.sendMessage(userId, "⚠️ คำสั่งนี้สำหรับแอดมินเท่านั้น");
+      bot.sendMessage(userId, "⚠️ คำสั่งนี้สำหรับแอดมินเท่านั้น")
     }
   } catch (error) {
-    console.error("Error checking admin status:", error);
-    bot.sendMessage(userId, "❌ เกิดข้อผิดพลาดในการตรวจสอบสิทธิ์");
+    console.error("Error checking admin status:", error)
+    bot.sendMessage(userId, "❌ เกิดข้อผิดพลาดในการตรวจสอบสิทธิ์")
   }
-});
+})
 
 // เพิ่มคำสั่งแสดงรายการวันหยุดพิเศษทั้งหมด
 bot.onText(/^\/list_holidays$/, (msg) => {
-  const chatId = msg.chat.id;
-  
+  const chatId = msg.chat.id
+
   if (holidaysData.holidays.length === 0) {
-    bot.sendMessage(chatId, "ยังไม่มีวันหยุดพิเศษในระบบ");
+    bot.sendMessage(chatId, "ยังไม่มีวันหยุดพิเศษในระบบ")
   } else {
-    // แปลงวันที่จาก ISO เป็นรูปแบบไทยก่อนแสดงผล
-    const thaiHolidays = holidaysData.holidays.map(isoDate => isoDateToThaiDate(isoDate));
-    const holidayList = thaiHolidays.join('\n');
-    bot.sendMessage(chatId, `📅 รายการวันหยุดพิเศษทั้งหมด (${holidaysData.holidays.length} วัน):\n${holidayList}\n\nปรับปรุงล่าสุด: ${new Date(holidaysData.lastUpdated).toLocaleString('th-TH')}`);
+    // สร้างรายการวันหยุดพร้อมชื่อ
+    const holidayListItems = holidaysData.holidays.map((isoDate) => {
+      const thaiDate = isoDateToThaiDate(isoDate)
+      const holidayName = holidaysData.holidayDetails[isoDate] || "วันหยุดพิเศษ"
+      return `${thaiDate} ${holidayName}`
+    })
+
+    const holidayList = holidayListItems.join("\n")
+    const lastUpdated = new Date(holidaysData.lastUpdated).toLocaleString(
+      "th-TH",
+      {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }
+    )
+
+    bot.sendMessage(
+      chatId,
+      `📅 รายการวันหยุดพิเศษทั้งหมด (${holidaysData.holidays.length} วัน):\n${holidayList}\n\nปรับปรุงล่าสุด: ${lastUpdated}`
+    )
   }
-});
+})
 
 // จัดการข้อความที่ไม่รู้จัก - ข้ามคำสั่งที่ขึ้นต้นด้วย /
 bot.on("message", (msg) => {
