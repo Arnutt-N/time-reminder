@@ -1,9 +1,9 @@
-// index.js - แก้ไขปัญหาเขตเวลา
+// index.js - แก้ไขปัญหาเขตเวลาและการจัดการวันหยุดแบบปลอดภัย
 const TelegramBot = require("node-telegram-bot-api")
 const cron = require("node-cron")
 const http = require("http")
-const fs = require("fs") // เพิ่มโมดูล fs
-const path = require("path") // เพิ่มโมดูล path
+const fs = require("fs")
+const path = require("path")
 require("dotenv").config()
 
 // กำหนดไฟล์สำหรับเก็บวันหยุดพิเศษ
@@ -26,19 +26,6 @@ if (botInitialized) {
 // URL ของแอปบน Render (ต้องแทนที่ด้วย URL ของคุณหลังจาก deploy)
 const appUrl = process.env.APP_URL || "https://your-app-name.onrender.com"
 
-// ฟังก์ชัน Keep-Alive สำหรับป้องกันการ "หลับ" บน Render
-function keepAlive() {
-  console.log("Pinging self to stay awake - " + new Date().toISOString())
-
-  http
-    .get(appUrl, (res) => {
-      console.log(`Ping status: ${res.statusCode}`)
-    })
-    .on("error", (err) => {
-      console.error(`Ping failed: ${err.message}`)
-    })
-}
-
 // ฟังก์ชันสำหรับโหลดวันหยุดพิเศษ
 function loadHolidays() {
   try {
@@ -57,56 +44,37 @@ function loadHolidays() {
   }
 }
 
-// ฟังก์ชันสำหรับบันทึกวันหยุดพิเศษ
-function saveHolidays(holidaysData) {
-  try {
-    holidaysData.lastUpdated = new Date().toISOString();
-    fs.writeFileSync(HOLIDAYS_FILE, JSON.stringify(holidaysData, null, 2), 'utf8');
-    console.log(`Saved ${holidaysData.holidays.length} holidays to file`);
-    return true;
-  } catch (err) {
-    console.error("Error saving holidays:", err);
-    return false;
-  }
-}
-
-// ฟังก์ชันแปลงวันที่รูปแบบ DD/MM/YYYY (พ.ศ.) เป็น YYYY-MM-DD (ค.ศ.)
-function thaiDateToISODate(thaiDateStr) {
-  // แยกวันที่จากรูปแบบ DD/MM/YYYY
-  const [day, month, yearBE] = thaiDateStr.split('/').map(num => parseInt(num, 10));
-  // แปลงปี พ.ศ. เป็น ค.ศ.
-  const yearCE = yearBE - 543;
-  // สร้างวันที่ในรูปแบบ YYYY-MM-DD
-  return `${yearCE}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
-}
-
 // ฟังก์ชันแปลงวันที่รูปแบบ YYYY-MM-DD (ค.ศ.) เป็น DD/MM/YYYY (พ.ศ.)
 function isoDateToThaiDate(isoDateStr) {
   // แยกวันที่จากรูปแบบ YYYY-MM-DD
-  const [yearCE, month, day] = isoDateStr.split('-').map(num => parseInt(num, 10));
+  const [yearCE, month, day] = isoDateStr
+    .split("-")
+    .map((num) => parseInt(num, 10))
   // แปลงปี ค.ศ. เป็น พ.ศ.
-  const yearBE = yearCE + 543;
+  const yearBE = yearCE + 543
   // สร้างวันที่ในรูปแบบ DD/MM/YYYY
-  return `${day.toString().padStart(2, '0')}/${month.toString().padStart(2, '0')}/${yearBE}`;
+  return `${day.toString().padStart(2, "0")}/${month
+    .toString()
+    .padStart(2, "0")}/${yearBE}`
 }
 
 // โหลดข้อมูลวันหยุดพิเศษเมื่อเริ่มโปรแกรม
-let holidaysData = loadHolidays();
-console.log(`Loaded ${holidaysData.holidays.length} special holidays from file`);
+let holidaysData = loadHolidays()
+console.log(`Loaded ${holidaysData.holidays.length} special holidays from file`)
 
 // ฟังก์ชันตรวจสอบว่าวันนี้เป็นวันหยุดหรือไม่
 function isHoliday() {
-  const now = new Date();
-  const day = now.getDay(); // 0 = อาทิตย์, 1 = จันทร์, ..., 6 = เสาร์
-  
+  const now = new Date()
+  const day = now.getDay() // 0 = อาทิตย์, 1 = จันทร์, ..., 6 = เสาร์
+
   // ตรวจสอบวันเสาร์-อาทิตย์
   if (day === 0 || day === 6) {
-    return true;
+    return true
   }
-  
+
   // ตรวจสอบวันหยุดพิเศษ
-  const today = now.toISOString().split('T')[0]; // รูปแบบ YYYY-MM-DD
-  return holidaysData.holidays.includes(today);
+  const today = now.toISOString().split("T")[0] // รูปแบบ YYYY-MM-DD
+  return holidaysData.holidays.includes(today)
 }
 
 // สร้าง instance ของ bot - ตั้งค่า polling: true เพียงครั้งเดียว
@@ -116,7 +84,9 @@ botInitialized = true
 // แสดงข้อมูลเวลาปัจจุบันของระบบ
 const currentServerTime = new Date()
 console.log(`Bot is running... Server time: ${currentServerTime.toISOString()}`)
-console.log(`Server timezone offset: ${currentServerTime.getTimezoneOffset() / -60} hours`)
+console.log(
+  `Server timezone offset: ${currentServerTime.getTimezoneOffset() / -60} hours`
+)
 
 // ฟังก์ชันสำหรับรูปแบบวันที่ เป็น พ.ศ.
 function getThaiDate() {
@@ -155,90 +125,116 @@ try {
 
 // ===== แก้ไขเวลา cron jobs ให้ตรงกับเวลาประเทศไทย โดยปรับให้เป็นเวลา UTC และตรวจสอบวันหยุด =====
 // เวลาไทย 7:25 น. = UTC 00:25 น. (จันทร์-ศุกร์)
-console.log("Setting up check-in reminder cron job for 7:25 AM Thailand time (00:25 UTC) - Workdays only")
+console.log(
+  "Setting up check-in reminder cron job for 7:25 AM Thailand time (00:25 UTC) - Workdays only"
+)
 const morningReminder = cron.schedule("25 0 * * 1-5", () => {
   // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
   if (isHoliday()) {
-    console.log("Today is a holiday. Skipping check-in reminder.");
-    return;
+    console.log("Today is a holiday. Skipping check-in reminder.")
+    return
   }
-  
-  console.log("Sending check-in reminder (7:25 Thai time)... " + new Date().toISOString())
-  const morningCheckinMessage = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
+
+  console.log(
+    "Sending check-in reminder (7:25 Thai time)... " + new Date().toISOString()
+  )
+  const morningCheckinMessage =
+    getMorningMessage() + "\n\n" + getCheckInReminderMessage()
   bot
     .sendMessage(chatId, morningCheckinMessage)
     .then(() => console.log("7:25 message sent successfully"))
     .catch((err) => console.error("Error sending message:", err))
-});
+})
 
 // เวลาไทย 8:25 น. = UTC 01:25 น. (จันทร์-ศุกร์)
-console.log("Setting up morning message cron job for 8:25 AM Thailand time (01:25 UTC) - Workdays only")
+console.log(
+  "Setting up morning message cron job for 8:25 AM Thailand time (01:25 UTC) - Workdays only"
+)
 const morningMessage = cron.schedule("25 1 * * 1-5", () => {
   // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
   if (isHoliday()) {
-    console.log("Today is a holiday. Skipping morning message.");
-    return;
+    console.log("Today is a holiday. Skipping morning message.")
+    return
   }
-  
-  console.log("Sending morning message (8:25 Thai time)... " + new Date().toISOString())
-  const morningFullMessage = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
+
+  console.log(
+    "Sending morning message (8:25 Thai time)... " + new Date().toISOString()
+  )
+  const morningFullMessage =
+    getMorningMessage() + "\n\n" + getCheckInReminderMessage()
   bot
     .sendMessage(chatId, morningFullMessage)
     .then(() => console.log("8:25 message sent successfully"))
     .catch((err) => console.error("Error sending message:", err))
-});
+})
 
 // เวลาไทย 15:25 น. = UTC 08:25 น. (จันทร์-ศุกร์)
-console.log("Setting up check-out reminder cron job for 15:25 PM Thailand time (08:25 UTC) - Workdays only")
+console.log(
+  "Setting up check-out reminder cron job for 15:25 PM Thailand time (08:25 UTC) - Workdays only"
+)
 const eveningReminder = cron.schedule("25 8 * * 1-5", () => {
   // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
   if (isHoliday()) {
-    console.log("Today is a holiday. Skipping check-out reminder.");
-    return;
+    console.log("Today is a holiday. Skipping check-out reminder.")
+    return
   }
-  
-  console.log("Sending check-out reminder (15:25 Thai time)... " + new Date().toISOString())
-  const eveningCheckoutMessage = getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
+
+  console.log(
+    "Sending check-out reminder (15:25 Thai time)... " +
+      new Date().toISOString()
+  )
+  const eveningCheckoutMessage =
+    getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
   bot
     .sendMessage(chatId, eveningCheckoutMessage)
     .then(() => console.log("15:25 message sent successfully"))
     .catch((err) => console.error("Error sending message:", err))
-});
+})
 
 // เวลาไทย 16:25 น. = UTC 09:25 น. (จันทร์-ศุกร์)
-console.log("Setting up evening message cron job for 16:25 PM Thailand time (09:25 UTC) - Workdays only")
+console.log(
+  "Setting up evening message cron job for 16:25 PM Thailand time (09:25 UTC) - Workdays only"
+)
 const eveningMessage = cron.schedule("25 9 * * 1-5", () => {
   // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
   if (isHoliday()) {
-    console.log("Today is a holiday. Skipping evening message.");
-    return;
+    console.log("Today is a holiday. Skipping evening message.")
+    return
   }
-  
-  console.log("Sending evening message (16:25 Thai time)... " + new Date().toISOString())
-  const eveningFullMessage = getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
+
+  console.log(
+    "Sending evening message (16:25 Thai time)... " + new Date().toISOString()
+  )
+  const eveningFullMessage =
+    getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
   bot
     .sendMessage(chatId, eveningFullMessage)
     .then(() => console.log("16:25 message sent successfully"))
-    .catch((err) => console.error("Error sending message:", err))
-});
+    .catch((err) => console.error("Error sending evening message:", err))
+})
 
 // ทดสอบส่งข้อความทุก 2 นาที ปิดเมื่อทดสอบเสร็จแล้ว
-console.log("Setting up test cron job to run every 2 minutes");
+console.log("Setting up test cron job to run every 2 minutes")
 const testCron = cron.schedule("*/2 * * * *", () => {
   // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
   if (isHoliday()) {
-    console.log("Today is a holiday. Skipping test message.");
-    return;
+    console.log("Today is a holiday. Skipping test message.")
+    return
   }
-  
-  const now = new Date();
-  const thaiTime = new Date(now.getTime() + 7 * 60 * 60 * 1000);
-  console.log(`Test cron executed at ${now.toISOString()}`);
-  
-  bot.sendMessage(chatId, "🔔 ทดสอบการแจ้งเตือนทุก 2 นาที - สำเร็จ!" + 
-    "\n\nเวลาเซิร์ฟเวอร์: " + now.toISOString() + 
-    "\nเวลาของไทย: " + thaiTime.toISOString());
-});
+
+  const now = new Date()
+  const thaiTime = new Date(now.getTime() + 7 * 60 * 60 * 1000)
+  console.log(`Test cron executed at ${now.toISOString()}`)
+
+  bot.sendMessage(
+    chatId,
+    "🔔 ทดสอบการแจ้งเตือนทุก 2 นาที - สำเร็จ!" +
+      "\n\nเวลาเซิร์ฟเวอร์: " +
+      now.toISOString() +
+      "\nเวลาของไทย: " +
+      thaiTime.toISOString()
+  )
+})
 
 // เก็บ references ของทุก event handlers เพื่อป้องกันการซ้ำซ้อน
 const handlers = {}
@@ -268,10 +264,7 @@ handlers.start = bot.onText(/^\/start$/, (msg) => {
 /morning_full - ดูข้อความเต็มของเวลา 7:25 และ 8:25 (เช้า+เข้างาน)
 /evening_full - ดูข้อความเต็มของเวลา 15:25 และ 16:25 (เย็น+ออกงาน)
 /list_holidays - แสดงรายการวันหยุดพิเศษทั้งหมด
-
-คำสั่งสำหรับผู้ดูแลกลุ่มเท่านั้น:
-/add_holiday วัน/เดือน/ปี(พ.ศ.) - เพิ่มวันหยุดพิเศษ (เช่น /add_holiday 1/1/2568)
-/remove_holiday วัน/เดือน/ปี(พ.ศ.) - ลบวันหยุดพิเศษ (เช่น /remove_holiday 1/1/2568)
+/reload_holidays - โหลดข้อมูลวันหยุดจากไฟล์ใหม่
   `
 
   bot
@@ -283,15 +276,15 @@ handlers.start = bot.onText(/^\/start$/, (msg) => {
 // ตรวจสอบเวลาของเซิร์ฟเวอร์
 handlers.servertime = bot.onText(/^\/servertime$/, (msg) => {
   const now = new Date()
-  const thaiTime = new Date(now.getTime() + (7*60*60*1000))
-  
+  const thaiTime = new Date(now.getTime() + 7 * 60 * 60 * 1000)
+
   const serverTimeMessage = `
 ⏰ เวลาของเซิร์ฟเวอร์:
 - เวลา UTC: ${now.toISOString()}
 - เวลาของไทย: ${thaiTime.toISOString()}
 - Timezone offset: ${now.getTimezoneOffset() / -60} hours
   `
-  
+
   bot
     .sendMessage(msg.chat.id, serverTimeMessage)
     .then(() => console.log("Server time message sent"))
@@ -343,7 +336,8 @@ handlers.evening = bot.onText(/^\/evening$/, (msg) => {
 
 // ทดสอบข้อความแจ้งเตือนตอนเช้าแบบเต็ม
 handlers.morningFull = bot.onText(/^\/morning_full$/, (msg) => {
-  const morningFullMessage = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
+  const morningFullMessage =
+    getMorningMessage() + "\n\n" + getCheckInReminderMessage()
   console.log("Sending test morning_full message")
   bot
     .sendMessage(msg.chat.id, morningFullMessage)
@@ -353,162 +347,13 @@ handlers.morningFull = bot.onText(/^\/morning_full$/, (msg) => {
 
 // ทดสอบข้อความแจ้งเตือนตอนเย็นแบบเต็ม
 handlers.eveningFull = bot.onText(/^\/evening_full$/, (msg) => {
-  const eveningFullMessage = getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
+  const eveningFullMessage =
+    getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
   console.log("Sending test evening_full message")
   bot
     .sendMessage(msg.chat.id, eveningFullMessage)
     .then(() => console.log("Evening full message sent successfully"))
     .catch((err) => console.error("Error sending evening full message:", err))
-})
-
-// เพิ่มคำสั่งเพิ่มวันหยุดพิเศษ พร้อมชื่อวันหยุด (สำหรับแอดมินกลุ่มเท่านั้น)
-bot.onText(/^\/add_holiday (.+)$/, async (msg, match) => {
-  const chatId = msg.chat.id
-  const userId = msg.from.id
-
-  // ตรวจสอบว่าเป็นแอดมินหรือไม่
-  try {
-    const chatMember = await bot.getChatMember(chatId, userId)
-    const isGroupAdmin = ["creator", "administrator"].includes(
-      chatMember.status
-    )
-
-    if (isGroupAdmin) {
-      const fullInput = match[1].trim()
-
-      // แยกวันที่และชื่อวันหยุด
-      // รูปแบบ: DD/MM/YYYY ชื่อวันหยุด
-      const datePattern = /^(\d{1,2}\/\d{1,2}\/\d{4})(?:\s+(.+))?$/
-      const dateMatch = fullInput.match(datePattern)
-
-      if (dateMatch) {
-        const thaiDateStr = dateMatch[1]
-        const holidayName = dateMatch[2] || "วันหยุดพิเศษ" // ถ้าไม่ระบุชื่อให้ใช้ค่าเริ่มต้น
-
-        // แปลงวันที่เป็นรูปแบบ ISO (YYYY-MM-DD)
-        const isoDateStr = thaiDateToISODate(thaiDateStr)
-
-        // ตรวจสอบความถูกต้องของวันที่
-        if (!isNaN(new Date(isoDateStr).getTime())) {
-          // ตรวจสอบว่ามีวันนี้อยู่แล้วหรือไม่
-          if (holidaysData.holidays.includes(isoDateStr)) {
-            // อัพเดทชื่อวันหยุด
-            holidaysData.holidayDetails[isoDateStr] = holidayName
-
-            // บันทึกลงไฟล์
-            if (saveHolidays(holidaysData)) {
-              bot.sendMessage(
-                chatId,
-                `✅ อัพเดทชื่อวันหยุด ${thaiDateStr} เป็น "${holidayName}" เรียบร้อยแล้ว`
-              )
-            } else {
-              bot.sendMessage(chatId, `❌ ไม่สามารถบันทึกข้อมูลวันหยุดได้`)
-            }
-          } else {
-            // เพิ่มวันหยุดใหม่
-            holidaysData.holidays.push(isoDateStr)
-            holidaysData.holidays.sort() // เรียงลำดับวันที่
-
-            // เพิ่มชื่อวันหยุด
-            holidaysData.holidayDetails[isoDateStr] = holidayName
-
-            // บันทึกลงไฟล์
-            if (saveHolidays(holidaysData)) {
-              bot.sendMessage(
-                chatId,
-                `✅ เพิ่มวันที่ ${thaiDateStr} "${holidayName}" เป็นวันหยุดพิเศษเรียบร้อยแล้ว`
-              )
-            } else {
-              bot.sendMessage(chatId, `❌ ไม่สามารถบันทึกข้อมูลวันหยุดได้`)
-            }
-          }
-        } else {
-          bot.sendMessage(
-            chatId,
-            `❌ วันที่ไม่ถูกต้อง โปรดตรวจสอบวันที่อีกครั้ง`
-          )
-        }
-      } else {
-        // แจ้งเตือนเมื่อรูปแบบวันที่ไม่ถูกต้อง
-        bot.sendMessage(
-          chatId,
-          `❌ รูปแบบไม่ถูกต้อง โปรดใช้รูปแบบ วัน/เดือน/ปี(พ.ศ.) ชื่อวันหยุด เช่น 7/4/2568 วันหยุดชดเชยวันจักรี`
-        )
-      }
-    } else {
-      // ส่งข้อความกลับเป็น PM เพื่อไม่ให้รบกวนกลุ่ม
-      bot.sendMessage(userId, "⚠️ คำสั่งนี้สำหรับแอดมินเท่านั้น")
-    }
-  } catch (error) {
-    console.error("Error checking admin status:", error)
-    bot.sendMessage(userId, "❌ เกิดข้อผิดพลาดในการตรวจสอบสิทธิ์")
-  }
-})
-
-// เพิ่มคำสั่งลบวันหยุดพิเศษ (สำหรับแอดมินเท่านั้น)
-bot.onText(/^\/remove_holiday (.+)$/, async (msg, match) => {
-  const chatId = msg.chat.id
-  const userId = msg.from.id
-
-  // ตรวจสอบว่าเป็นแอดมินหรือไม่
-  try {
-    const chatMember = await bot.getChatMember(chatId, userId)
-    const isGroupAdmin = ["creator", "administrator"].includes(
-      chatMember.status
-    )
-
-    if (isGroupAdmin) {
-      const thaiDateStr = match[1].trim() // รับวันที่แบบไทยจากคำสั่ง
-
-      // ตรวจสอบรูปแบบวันที่ (DD/MM/YYYY)
-      if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(thaiDateStr)) {
-        // แปลงวันที่เป็นรูปแบบ ISO (YYYY-MM-DD)
-        const isoDateStr = thaiDateToISODate(thaiDateStr)
-
-        // ตรวจสอบว่ามีวันนี้อยู่หรือไม่
-        const index = holidaysData.holidays.indexOf(isoDateStr)
-        if (index !== -1) {
-          // ลบวันหยุด
-          holidaysData.holidays.splice(index, 1)
-
-          // ลบชื่อวันหยุด
-          if (
-            holidaysData.holidayDetails &&
-            holidaysData.holidayDetails[isoDateStr]
-          ) {
-            delete holidaysData.holidayDetails[isoDateStr]
-          }
-
-          // บันทึกลงไฟล์
-          if (saveHolidays(holidaysData)) {
-            bot.sendMessage(
-              chatId,
-              `✅ ลบวันที่ ${thaiDateStr} ออกจากรายการวันหยุดพิเศษเรียบร้อยแล้ว`
-            )
-          } else {
-            bot.sendMessage(chatId, `❌ ไม่สามารถบันทึกข้อมูลวันหยุดได้`)
-          }
-        } else {
-          bot.sendMessage(
-            chatId,
-            `❓ ไม่พบวันที่ ${thaiDateStr} ในรายการวันหยุดพิเศษ`
-          )
-        }
-      } else {
-        // แจ้งเตือนเมื่อรูปแบบวันที่ไม่ถูกต้อง
-        bot.sendMessage(
-          chatId,
-          `❌ รูปแบบวันที่ไม่ถูกต้อง โปรดใช้รูปแบบ วัน/เดือน/ปี(พ.ศ.) เช่น 7/4/2568`
-        )
-      }
-    } else {
-      // ส่งข้อความกลับเป็น PM เพื่อไม่ให้รบกวนกลุ่ม
-      bot.sendMessage(userId, "⚠️ คำสั่งนี้สำหรับแอดมินเท่านั้น")
-    }
-  } catch (error) {
-    console.error("Error checking admin status:", error)
-    bot.sendMessage(userId, "❌ เกิดข้อผิดพลาดในการตรวจสอบสิทธิ์")
-  }
 })
 
 // เพิ่มคำสั่งแสดงรายการวันหยุดพิเศษทั้งหมด
@@ -522,7 +367,7 @@ bot.onText(/^\/list_holidays$/, (msg) => {
     const holidayListItems = holidaysData.holidays.map((isoDate) => {
       const thaiDate = isoDateToThaiDate(isoDate)
       const holidayName = holidaysData.holidayDetails[isoDate] || "วันหยุดพิเศษ"
-      return `${thaiDate} ${holidayName}`
+      return `- ${thaiDate} ${holidayName}`
     })
 
     const holidayList = holidayListItems.join("\n")
@@ -540,8 +385,36 @@ bot.onText(/^\/list_holidays$/, (msg) => {
 
     bot.sendMessage(
       chatId,
-      `📅 รายการวันหยุดพิเศษทั้งหมด (${holidaysData.holidays.length} วัน):\n${holidayList}\n\nปรับปรุงล่าสุด: ${lastUpdated}`
+      `📅 รายการวันหยุดพิเศษทั้งหมด (${holidaysData.holidays.length} วัน):\n\n${holidayList}\n\nปรับปรุงล่าสุด: ${lastUpdated}`
     )
+  }
+})
+
+// เพิ่มคำสั่งโหลดข้อมูลวันหยุดจากไฟล์ใหม่ (สำหรับแอดมินเท่านั้น)
+bot.onText(/^\/reload_holidays$/, async (msg) => {
+  const chatId = msg.chat.id
+  const userId = msg.from.id
+
+  // ตรวจสอบว่าเป็นแอดมินหรือไม่
+  try {
+    const chatMember = await bot.getChatMember(chatId, userId)
+    const isGroupAdmin = ["creator", "administrator"].includes(
+      chatMember.status
+    )
+
+    if (isGroupAdmin) {
+      // โหลดข้อมูลวันหยุดใหม่
+      holidaysData = loadHolidays()
+      bot.sendMessage(
+        chatId,
+        `✅ โหลดข้อมูลวันหยุดใหม่สำเร็จ! มีวันหยุดทั้งหมด ${holidaysData.holidays.length} วัน`
+      )
+    } else {
+      bot.sendMessage(userId, "⚠️ คำสั่งนี้สำหรับแอดมินเท่านั้น")
+    }
+  } catch (error) {
+    console.error("Error checking admin status:", error)
+    bot.sendMessage(userId, "❌ เกิดข้อผิดพลาดในการตรวจสอบสิทธิ์")
   }
 })
 
@@ -568,35 +441,44 @@ bot.on("polling_error", (error) => {
 // ปรับปรุง HTTP server สำหรับ Render และใช้ Keep-Alive
 const server = http.createServer((req, res) => {
   // บันทึกรายละเอียดคำขอทั้งหมด
-  console.log(`Received HTTP request: ${req.method} ${req.url} from ${req.headers['user-agent'] || 'Unknown'}`);
-  
+  console.log(
+    `Received HTTP request: ${req.method} ${req.url} from ${
+      req.headers["user-agent"] || "Unknown"
+    }`
+  )
+
   // ทดสอบบอทเมื่อมีการเรียกใช้ HTTP server
   try {
-    bot.getMe().then(botInfo => {
-      console.log(`Bot is working: ${botInfo.username}`);
-    }).catch(error => {
-      console.error('Bot test failed:', error);
-      // พยายามรีสตาร์ทบอท
-      try {
-        console.log('Attempting to restart bot polling...');
-        bot.stopPolling();
-        setTimeout(() => {
-          bot.startPolling();
-          console.log('Bot polling restarted successfully');
-        }, 2000);
-      } catch (e) {
-        console.error('Failed to restart bot polling:', e);
-      }
-    });
+    bot
+      .getMe()
+      .then((botInfo) => {
+        console.log(`Bot is working: ${botInfo.username}`)
+      })
+      .catch((error) => {
+        console.error("Bot test failed:", error)
+        // พยายามรีสตาร์ทบอท
+        try {
+          console.log("Attempting to restart bot polling...")
+          bot.stopPolling()
+          setTimeout(() => {
+            bot.startPolling()
+            console.log("Bot polling restarted successfully")
+          }, 2000)
+        } catch (e) {
+          console.error("Failed to restart bot polling:", e)
+        }
+      })
   } catch (e) {
-    console.error('Error in bot test:', e);
+    console.error("Error in bot test:", e)
   }
-  
-  res.writeHead(200, { "Content-Type": "text/plain" });
-  const now = new Date();
-  const thaiTime = new Date(now.getTime() + (7*60*60*1000));
-  res.end(`Bot is active! Server time: ${now.toISOString()}\nThai time: ${thaiTime.toISOString()}\n`);
-});
+
+  res.writeHead(200, { "Content-Type": "text/plain" })
+  const now = new Date()
+  const thaiTime = new Date(now.getTime() + 7 * 60 * 60 * 1000)
+  res.end(
+    `Bot is active! Server time: ${now.toISOString()}\nThai time: ${thaiTime.toISOString()}\n`
+  )
+})
 
 const PORT = process.env.PORT || 3000
 server.listen(PORT, () => {
@@ -605,56 +487,59 @@ server.listen(PORT, () => {
 
 // ฟังก์ชัน Keep-Alive สำหรับป้องกันการ "หลับ" บน Render
 function keepAlive() {
-  const now = new Date();
-  console.log("Pinging self to stay awake - " + now.toISOString());
+  const now = new Date()
+  console.log("Pinging self to stay awake - " + now.toISOString())
 
   // ทดสอบบอท
   try {
-    bot.getMe().then(botInfo => {
-      console.log(`Bot check OK: ${botInfo.username} at ${now.toISOString()}`);
-    }).catch(error => {
-      console.error('Bot check failed:', error);
-      try {
-        bot.stopPolling();
-        setTimeout(() => {
-          bot.startPolling();
-          console.log('Bot polling restarted after failure');
-        }, 2000);
-      } catch (e) {
-        console.error('Failed to restart bot:', e);
-      }
-    });
+    bot
+      .getMe()
+      .then((botInfo) => {
+        console.log(`Bot check OK: ${botInfo.username} at ${now.toISOString()}`)
+      })
+      .catch((error) => {
+        console.error("Bot check failed:", error)
+        try {
+          bot.stopPolling()
+          setTimeout(() => {
+            bot.startPolling()
+            console.log("Bot polling restarted after failure")
+          }, 2000)
+        } catch (e) {
+          console.error("Failed to restart bot:", e)
+        }
+      })
   } catch (e) {
-    console.error('Error in bot check:', e);
+    console.error("Error in bot check:", e)
   }
 
   // Ping ตัวเอง
   try {
     http
       .get(appUrl, (res) => {
-        console.log(`Ping status: ${res.statusCode}`);
+        console.log(`Ping status: ${res.statusCode}`)
       })
       .on("error", (err) => {
-        console.error(`Ping failed: ${err.message}`);
-      });
+        console.error(`Ping failed: ${err.message}`)
+      })
   } catch (err) {
-    console.error('Error in keepAlive function:', err);
+    console.error("Error in keepAlive function:", err)
   }
 }
 
 // ลดเวลา ping เหลือ 3 นาที
-const pingInterval = setInterval(keepAlive, 3 * 60 * 1000);
+const pingInterval = setInterval(keepAlive, 3 * 60 * 1000)
 
 // เพิ่มการจัดการข้อผิดพลาด
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception:", err)
   // ไม่ควรจบการทำงานของบอท
-});
+})
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection at:", promise, "reason:", reason)
   // ไม่ควรจบการทำงานของบอท
-});
+})
 
 // จัดการการปิดโปรแกรมอย่างถูกต้อง
 process.on("SIGINT", () => {
@@ -665,6 +550,7 @@ process.on("SIGINT", () => {
   morningMessage.stop()
   eveningReminder.stop()
   eveningMessage.stop()
+  testCron.stop()
 
   // หยุด ping interval
   clearInterval(pingInterval)
@@ -681,13 +567,5 @@ process.on("SIGINT", () => {
 
 // แจ้งเตือนเมื่อบอทเริ่มทำงานสมบูรณ์
 console.log("Bot setup complete, waiting for messages...")
-
-// คำสั่งทดสอบการส่งข้อความแจ้งเตือนทันที
-// bot.onText(/^\/test_now$/, (msg) => {
-//   const chatId = msg.chat.id;
-//   bot.sendMessage(chatId, "🔔 ทดสอบการแจ้งเตือนทันที - สำเร็จ!");
-// });
-
-
-
-
+console.log("Bot is ready to send reminders!")
+console.log("Bot is running in production mode")
