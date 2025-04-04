@@ -367,7 +367,7 @@ bot.onText(/^\/list_holidays$/, (msg) => {
     const holidayListItems = holidaysData.holidays.map((isoDate) => {
       const thaiDate = isoDateToThaiDate(isoDate)
       const holidayName = holidaysData.holidayDetails[isoDate] || "วันหยุดพิเศษ"
-      return `- ${thaiDate} ${holidayName}`
+      return `- ${thaiDate}   ${holidayName}`
     })
 
     const holidayList = holidayListItems.join("\n")
