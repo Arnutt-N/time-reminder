@@ -58,6 +58,48 @@ function isoDateToThaiDate(isoDateStr) {
     .padStart(2, "0")}/${yearBE}`
 }
 
+/**
+ * ฟังก์ชันแปลงวันที่และเวลาในรูปแบบ ISO UTC+7 เป็นรูปแบบไทย
+ * สำหรับกรณีที่ค่า ISO ถูกกำหนดเป็น UTC+7 มาแล้ว แม้จะมี Z ต่อท้าย
+ * @param {string} isoDateStr - วันที่ในรูปแบบ ISO UTC+7 เช่น "2025-04-04T23:30:00.000Z"
+ * @returns {string} - วันที่และเวลาในรูปแบบไทย "DD/MM/YYYY HH:MM:SS"
+ */
+function isoUTCToThaiDateTime(isoDateStr) {
+  try {
+    // แปลง ISO string เป็น Date object
+    const dateObj = new Date(isoDateStr);
+    
+    // ตรวจสอบว่า Date object ถูกต้อง
+    if (isNaN(dateObj.getTime())) {
+      // ถ้าวันที่ไม่ถูกต้อง ให้ตรวจสอบว่าอาจจะอยู่ในรูปแบบไทยอยู่แล้วหรือไม่
+      if (typeof isoDateStr === 'string' && /^\d{2}\/\d{2}\/\d{4}\s\d{2}:\d{2}:\d{2}$/.test(isoDateStr)) {
+        // ถ้าเป็นรูปแบบไทยอยู่แล้ว (DD/MM/YYYY HH:MM:SS) ให้ส่งค่าเดิมกลับไป
+        return isoDateStr;
+      }
+      // ถ้าไม่ใช่รูปแบบที่รองรับ ให้ส่งค่าเริ่มต้นกลับไป
+      return "ไม่ระบุ";
+    }
+    
+    // ดึงข้อมูลจาก Date object
+    // เนื่องจากคุณบอกว่าค่า ISO ถูกกำหนดเป็น UTC+7 มาแล้ว
+    // เราจึงใช้ค่าเวลา UTC ตรงๆ โดยไม่ต้องบวกเพิ่ม 7 ชั่วโมง
+    
+    const day = dateObj.getUTCDate().toString().padStart(2, '0');
+    const month = (dateObj.getUTCMonth() + 1).toString().padStart(2, '0');
+    const yearBE = dateObj.getUTCFullYear() + 543; // แปลงเป็นปี พ.ศ.
+    
+    const hours = dateObj.getUTCHours().toString().padStart(2, '0');
+    const minutes = dateObj.getUTCMinutes().toString().padStart(2, '0');
+    const seconds = dateObj.getUTCSeconds().toString().padStart(2, '0');
+    
+    // รูปแบบ "DD/MM/YYYY HH:MM:SS"
+    return `${day}/${month}/${yearBE} ${hours}:${minutes}:${seconds}`;
+  } catch (error) {
+    console.error("Error converting date:", error);
+    return "ไม่ระบุ";
+  }
+}
+
 // โหลดข้อมูลวันหยุดพิเศษเมื่อเริ่มโปรแกรม
 let holidaysData = loadHolidays()
 console.log(`Loaded ${holidaysData.holidays.length} special holidays from file`)
@@ -357,6 +399,7 @@ handlers.eveningFull = bot.onText(/^\/evening_full$/, (msg) => {
 })
 
 // เพิ่มคำสั่งแสดงรายการวันหยุดพิเศษทั้งหมด
+// เพิ่มคำสั่งแสดงรายการวันหยุดพิเศษทั้งหมด
 bot.onText(/^\/list_holidays$/, (msg) => {
   const chatId = msg.chat.id
 
@@ -371,17 +414,9 @@ bot.onText(/^\/list_holidays$/, (msg) => {
     })
 
     const holidayList = holidayListItems.join("\n")
-    const lastUpdated = new Date(holidaysData.lastUpdated).toLocaleString(
-      "th-TH",
-      {
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      }
-    )
+    
+    // แปลงวันที่ปรับปรุงล่าสุดจาก ISO UTC+7 เป็นรูปแบบไทย
+    const lastUpdated = isoUTCToThaiDateTime(holidaysData.lastUpdated)
 
     bot.sendMessage(
       chatId,
