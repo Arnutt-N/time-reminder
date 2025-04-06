@@ -1,32 +1,344 @@
-// index.js - แก้ไขปัญหาเขตเวลาและการจัดการวันหยุดแบบปลอดภัย
+// index.js - ปรับปรุงเพื่อแก้ไขปัญหา PID ใหม่โผล่ขึ้นมาไม่รู้จบ
+const {
+  initializeDatabase,
+  getUserByChatId,
+  getSubscribedUsers,
+  updateUserSubscription,
+  getAllHolidays,
+  searchHolidays,
+  getConnection,
+  addHoliday,
+  deleteHoliday,
+  importHolidaysFromJson,
+} = require("./tidb-connection.js")
+const { LOG_LEVELS, botLog, logError } = require("./logger.js")
 const TelegramBot = require("node-telegram-bot-api")
 const cron = require("node-cron")
-const http = require("http")
 const fs = require("fs")
 const path = require("path")
+const express = require("express")
+const dayjs = require("dayjs")
+const utc = require("dayjs/plugin/utc")
+const timezone = require("dayjs/plugin/timezone")
 require("dotenv").config()
 
-// กำหนดไฟล์สำหรับเก็บวันหยุดพิเศษ
+// ตั้งค่า Day.js
+dayjs.extend(utc)
+dayjs.extend(timezone)
+const THAI_TIMEZONE = "Asia/Bangkok"
+
+// กำหนดตัวแปรสำคัญ
+const token = process.env.TELEGRAM_BOT_TOKEN
+const chatId = process.env.TELEGRAM_CHAT_ID
+const appUrl = process.env.APP_URL || "https://your-app-name.onrender.com"
+const port = process.env.PORT || 3000
 const HOLIDAYS_FILE = path.join(__dirname, "holidays.json")
 
-// นำ token ของ bot มาจาก environment variable
-const token = process.env.TELEGRAM_BOT_TOKEN
-// Chat ID ที่คุณต้องการส่งข้อความไป
-const chatId = process.env.TELEGRAM_CHAT_ID
-
-// สร้าง flag เพื่อตรวจสอบว่าเริ่มทำงานแล้วหรือยัง
+// ตัวแปรสถานะการเริ่มต้น
 let botInitialized = false
+let holidaysData = {}
+let appInitialized = false
+let eventHandlersInitialized = false
+let cronJobsInitialized = false
+let hasStarted = false
+let isTestCronRunning = false
+let testCron = null
 
-// ตรวจสอบว่ามีการรันโค้ดแล้วหรือยัง ป้องกันการรันซ้ำซ้อน
-if (botInitialized) {
-  console.log("Bot already initialized. Exiting duplicate instance.")
-  process.exit(0)
+// ตรวจสอบว่ามี TELEGRAM_CHAT_ID หรือไม่
+if (!chatId) {
+  console.warn(
+    "TELEGRAM_CHAT_ID is not set. Messages will only be sent to individual subscribers."
+  )
 }
 
-// URL ของแอปบน Render (ต้องแทนที่ด้วย URL ของคุณหลังจาก deploy)
-const appUrl = process.env.APP_URL || "https://your-app-name.onrender.com"
+// สร้าง Express app
+const app = express()
+app.use(express.json())
 
-// ฟังก์ชันสำหรับโหลดวันหยุดพิเศษ
+// สร้าง instance ของ bot โดยไม่ใช้ polling
+const bot = new TelegramBot(token, { polling: false })
+
+// ปรับปรุงฟังก์ชัน initializeApp ให้มีการป้องกันการเรียกซ้ำ
+async function initializeApp() {
+  try {
+    // ป้องกันการเรียกซ้ำ
+    if (appInitialized) {
+      botLog(
+        LOG_LEVELS.INFO,
+        "initializeApp",
+        "แอปพลิเคชันได้รับการเริ่มต้นแล้ว"
+      )
+      return true
+    }
+
+    botLog(LOG_LEVELS.INFO, "initializeApp", "เริ่มต้นการทำงานของแอปพลิเคชัน")
+
+    // โหลดข้อมูลวันหยุด
+    holidaysData = loadHolidays()
+    botLog(LOG_LEVELS.DEBUG, "initializeApp", "กำลังโหลดข้อมูลวันหยุด...")
+    botLog(
+      LOG_LEVELS.INFO,
+      "initializeApp",
+      `โหลดข้อมูลวันหยุดพิเศษจำนวน ${holidaysData.holidays.length} วันจากไฟล์`
+    )
+
+    // เริ่มต้นฐานข้อมูล
+    botLog(LOG_LEVELS.INFO, "initializeApp", "กำลังเริ่มต้นฐานข้อมูล...")
+    await initializeDatabase()
+    botLog(LOG_LEVELS.INFO, "initializeApp", "เริ่มต้นฐานข้อมูลสำเร็จ")
+
+    // แสดงข้อมูลเวลาปัจจุบันของระบบ
+    const timeInfo = getServerTimeInfo()
+    botLog(
+      LOG_LEVELS.INFO,
+      "initializeApp",
+      `บอทกำลังทำงาน... เวลา UTC: ${timeInfo.utcTime}, เวลาไทย: ${timeInfo.thaiTime}`
+    )
+    botLog(
+      LOG_LEVELS.INFO,
+      "initializeApp",
+      `ค่า Timezone offset: ${timeInfo.offset} ชั่วโมง`
+    )
+
+    // เริ่ม server และตั้งค่า webhook
+    return new Promise((resolve, reject) => {
+      app
+        .listen(port, async () => {
+          try {
+            // ล้าง webhook เดิม
+            botLog(LOG_LEVELS.INFO, "initializeApp", "กำลังลบ webhook เดิม")
+            await bot.deleteWebHook()
+
+            // ตั้งค่า webhook ใหม่
+            botLog(
+              LOG_LEVELS.INFO,
+              "initializeApp",
+              `กำลังตั้งค่า webhook ใหม่: ${appUrl}/bot${token}`
+            )
+            const webhookResult = await bot.setWebHook(`${appUrl}/bot${token}`)
+
+            if (!webhookResult) {
+              const errorMsg = "ไม่สามารถตั้งค่า webhook ได้"
+              botLog(LOG_LEVELS.ERROR, "initializeApp", errorMsg)
+              return reject(new Error(errorMsg))
+            }
+
+            botInitialized = true
+            botLog(
+              LOG_LEVELS.INFO,
+              "initializeApp",
+              `เซิร์ฟเวอร์ทำงานที่พอร์ต ${port}`
+            )
+            botLog(
+              LOG_LEVELS.INFO,
+              "initializeApp",
+              `ตั้งค่า webhook: ${appUrl}/bot${token}`
+            )
+
+            // ตั้งค่า event handlers
+            setupEventHandlers()
+            botLog(
+              LOG_LEVELS.INFO,
+              "initializeApp",
+              "ตั้งค่า event handlers สำเร็จ"
+            )
+
+            // ตั้งค่า cron jobs
+            setupCronJobs()
+            botLog(LOG_LEVELS.INFO, "initializeApp", "ตั้งค่า cron jobs สำเร็จ")
+
+            // ส่งข้อความแจ้งเตือนไปยังแอดมินว่าบอทเริ่มทำงานแล้ว
+            try {
+              if (process.env.ADMIN_CHAT_ID) {
+                const adminChatId = process.env.ADMIN_CHAT_ID
+                botLog(
+                  LOG_LEVELS.INFO,
+                  "initializeApp",
+                  `กำลังส่งข้อความแจ้งเตือนไปยังแอดมิน ${adminChatId}`
+                )
+
+                const startupMessage = `🤖 *บอทเริ่มทำงานแล้ว!*\n\nเวลาเริ่มต้น: ${timeInfo.thaiTime}\nเซิร์ฟเวอร์: ${appUrl}\n\nเรียกใช้คำสั่ง /start เพื่อดูคำสั่งทั้งหมด`
+
+                await bot.sendMessage(adminChatId, startupMessage, {
+                  parse_mode: "Markdown",
+                })
+                botLog(
+                  LOG_LEVELS.INFO,
+                  "initializeApp",
+                  `ส่งข้อความแจ้งเตือนไปยังแอดมินสำเร็จ`
+                )
+
+                // สั่งจำลองคำสั่ง /start ให้กับแอดมิน
+                const simulatedMessage = {
+                  message_id: Date.now(),
+                  from: {
+                    id: adminChatId,
+                    first_name: "Admin",
+                    is_bot: false,
+                  },
+                  chat: {
+                    id: adminChatId,
+                    type: "private",
+                  },
+                  date: Math.floor(Date.now() / 1000),
+                  text: "/start",
+                }
+
+                // เรียกใช้ processUpdate เพื่อจำลองการส่งคำสั่ง /start
+                await bot.processUpdate({ message: simulatedMessage })
+                botLog(
+                  LOG_LEVELS.INFO,
+                  "initializeApp",
+                  `จำลองการเรียกใช้คำสั่ง /start สำหรับแอดมินสำเร็จ`
+                )
+              } else {
+                botLog(
+                  LOG_LEVELS.WARN,
+                  "initializeApp",
+                  `ไม่พบ ADMIN_CHAT_ID ในสภาพแวดล้อม ไม่สามารถส่งข้อความแจ้งเตือนได้`
+                )
+              }
+            } catch (notifyError) {
+              logError("initializeApp-admin-notify", notifyError)
+              botLog(
+                LOG_LEVELS.ERROR,
+                "initializeApp",
+                `ไม่สามารถส่งข้อความแจ้งเตือนไปยังแอดมินได้ แต่บอทยังคงทำงานปกติ`
+              )
+            }
+
+            // ตั้งค่าสถานะว่าได้เริ่มต้นแล้ว
+            appInitialized = true
+            resolve(true)
+          } catch (error) {
+            logError("initializeApp-webhook", error)
+            reject(error)
+          }
+        })
+        .on("error", (error) => {
+          logError("initializeApp-server", error)
+          reject(error)
+        })
+    })
+  } catch (err) {
+    console.error("เกิดข้อผิดพลาดในการเริ่มต้นแอปพลิเคชัน:", err)
+    logError("initializeApp", err)
+    process.exit(1)
+  }
+}
+
+// ฟังก์ชันหลักเริ่มต้นโปรแกรม - ปรับปรุงเพื่อป้องกันการเรียกซ้ำ
+async function startApplication() {
+  // ป้องกันการเรียกซ้ำ
+  if (hasStarted) {
+    botLog(LOG_LEVELS.INFO, "startApplication", "โปรแกรมได้เริ่มต้นไปแล้ว")
+    return
+  }
+
+  try {
+    botLog(LOG_LEVELS.INFO, "startApplication", "เริ่มต้นการทำงานของโปรแกรม")
+
+    // ตรวจสอบและจัดการไฟล์ล็อก
+    if (fs.existsSync("bot.lock")) {
+      const pid = parseInt(fs.readFileSync("bot.lock", "utf8"), 10)
+      try {
+        process.kill(pid, 0) // ตรวจสอบว่าโปรเซสยังมีชีวิต
+        botLog(
+          LOG_LEVELS.ERROR,
+          "startApplication",
+          `บอทกำลังทำงานอยู่แล้ว (PID: ${pid}) กำลังปิดโปรแกรม...`
+        )
+        process.exit(1)
+      } catch (e) {
+        botLog(
+          LOG_LEVELS.WARN,
+          "startApplication",
+          `พบไฟล์ล็อกเก่า (PID: ${pid}) แต่ไม่มีกระบวนการทำงาน ลบไฟล์ล็อก...`
+        )
+        fs.unlinkSync("bot.lock")
+      }
+    }
+
+    // เขียนไฟล์ล็อกใหม่
+    fs.writeFileSync("bot.lock", process.pid.toString())
+    botLog(
+      LOG_LEVELS.INFO,
+      "startApplication",
+      `เขียนไฟล์ล็อกสำเร็จ (PID: ${process.pid})`
+    )
+
+    // จัดการเมื่อโปรแกรมปิด
+    const cleanup = () => {
+      try {
+        if (fs.existsSync("bot.lock")) {
+          fs.unlinkSync("bot.lock")
+          botLog(
+            LOG_LEVELS.INFO,
+            "startApplication",
+            "ลบไฟล์ล็อกเมื่อโปรแกรมปิดสำเร็จ"
+          )
+        }
+      } catch (err) {
+        logError("startApplication-cleanup", err)
+      }
+    }
+
+    // ลบการจัดการสัญญาณเดิมก่อนเพิ่มใหม่ เพื่อป้องกันการซ้ำซ้อน
+    process.removeAllListeners("exit")
+    process.removeAllListeners("SIGINT")
+    process.removeAllListeners("uncaughtException")
+
+    // เพิ่มการจัดการสัญญาณใหม่
+    process.on("exit", cleanup)
+    process.on("SIGINT", () => {
+      cleanup()
+      process.exit(0)
+    })
+    process.on("uncaughtException", (err) => {
+      logError("uncaughtException", err)
+      cleanup()
+      process.exit(1)
+    })
+
+    // เริ่มต้นแอปพลิเคชัน (เรียกครั้งเดียว)
+    await initializeApp()
+    botLog(
+      LOG_LEVELS.INFO,
+      "startApplication",
+      "บอทพร้อมทำงานและตอบสนองคำสั่งแล้ว"
+    )
+
+    // ตั้งค่าสถานะว่าได้เริ่มต้นแล้ว
+    hasStarted = true
+  } catch (err) {
+    logError("startApplication", err)
+    process.exit(1)
+  }
+}
+
+// ใช้ dayjs ทั้งหมดแทน Date สำหรับการจัดการเวลา
+function getServerTimeInfo() {
+  const utcNow = dayjs().utc()
+  const thaiNow = utcNow.tz(THAI_TIMEZONE)
+
+  // คำนวณ timezone offset แยกชั่วโมงและนาที
+  const offsetMinutes = thaiNow.utcOffset()
+  const offsetHours = Math.floor(offsetMinutes / 60)
+  const offsetMins = offsetMinutes % 60
+
+  return {
+    utcTime: utcNow.format(`DD/MM/${utcNow.year() + 543} - HH:mm น. (UTC)`),
+    thaiTime: thaiNow.format(
+      `DD/MM/${thaiNow.year() + 543} - HH:mm น. (UTC+7)`
+    ),
+    thaiDate: thaiNow.format(`DD/MM/${thaiNow.year() + 543}`),
+    offset: offsetHours,
+    offsetMinutes: offsetMins,
+    isWeekend: isWeekend(thaiNow),
+  }
+}
+
+// ฟังก์ชันการจัดการวันหยุด
 function loadHolidays() {
   try {
     if (fs.existsSync(HOLIDAYS_FILE)) {
@@ -44,102 +356,200 @@ function loadHolidays() {
   }
 }
 
-// ฟังก์ชันแปลงวันที่รูปแบบ YYYY-MM-DD (ค.ศ.) เป็น DD/MM/YYYY (พ.ศ.)
-function isoDateToThaiDate(isoDateStr) {
-  // แยกวันที่จากรูปแบบ YYYY-MM-DD
-  const [yearCE, month, day] = isoDateStr
-    .split("-")
-    .map((num) => parseInt(num, 10))
-  // แปลงปี ค.ศ. เป็น พ.ศ.
-  const yearBE = yearCE + 543
-  // สร้างวันที่ในรูปแบบ DD/MM/YYYY
-  return `${day.toString().padStart(2, "0")}/${month
-    .toString()
-    .padStart(2, "0")}/${yearBE}`
-}
-
-/**
- * ฟังก์ชันแปลงวันที่และเวลาในรูปแบบ ISO UTC+7 เป็นรูปแบบไทย
- * สำหรับกรณีที่ค่า ISO ถูกกำหนดเป็น UTC+7 มาแล้ว แม้จะมี Z ต่อท้าย
- * @param {string} isoDateStr - วันที่ในรูปแบบ ISO UTC+7 เช่น "2025-04-04T23:30:00.000Z"
- * @returns {string} - วันที่และเวลาในรูปแบบไทย "DD/MM/YYYY HH:MM:SS"
- */
-function isoUTCToThaiDateTime(isoDateStr) {
+function saveHolidays() {
   try {
-    // แปลง ISO string เป็น Date object
-    const dateObj = new Date(isoDateStr);
-    
-    // ตรวจสอบว่า Date object ถูกต้อง
-    if (isNaN(dateObj.getTime())) {
-      // ถ้าวันที่ไม่ถูกต้อง ให้ตรวจสอบว่าอาจจะอยู่ในรูปแบบไทยอยู่แล้วหรือไม่
-      if (typeof isoDateStr === 'string' && /^\d{2}\/\d{2}\/\d{4}\s\d{2}:\d{2}:\d{2}$/.test(isoDateStr)) {
-        // ถ้าเป็นรูปแบบไทยอยู่แล้ว (DD/MM/YYYY HH:MM:SS) ให้ส่งค่าเดิมกลับไป
-        return isoDateStr;
-      }
-      // ถ้าไม่ใช่รูปแบบที่รองรับ ให้ส่งค่าเริ่มต้นกลับไป
-      return "ไม่ระบุ";
-    }
-    
-    // ดึงข้อมูลจาก Date object
-    // เนื่องจากคุณบอกว่าค่า ISO ถูกกำหนดเป็น UTC+7 มาแล้ว
-    // เราจึงใช้ค่าเวลา UTC ตรงๆ โดยไม่ต้องบวกเพิ่ม 7 ชั่วโมง
-    
-    const day = dateObj.getUTCDate().toString().padStart(2, '0');
-    const month = (dateObj.getUTCMonth() + 1).toString().padStart(2, '0');
-    const yearBE = dateObj.getUTCFullYear() + 543; // แปลงเป็นปี พ.ศ.
-    
-    const hours = dateObj.getUTCHours().toString().padStart(2, '0');
-    const minutes = dateObj.getUTCMinutes().toString().padStart(2, '0');
-    const seconds = dateObj.getUTCSeconds().toString().padStart(2, '0');
-    
-    // รูปแบบ "DD/MM/YYYY HH:MM:SS"
-    return `${day}/${month}/${yearBE} ${hours}:${minutes}:${seconds}`;
-  } catch (error) {
-    console.error("Error converting date:", error);
-    return "ไม่ระบุ";
-  }
-}
-
-// โหลดข้อมูลวันหยุดพิเศษเมื่อเริ่มโปรแกรม
-let holidaysData = loadHolidays()
-console.log(`Loaded ${holidaysData.holidays.length} special holidays from file`)
-
-// ฟังก์ชันตรวจสอบว่าวันนี้เป็นวันหยุดหรือไม่
-function isHoliday() {
-  const now = new Date()
-  const day = now.getDay() // 0 = อาทิตย์, 1 = จันทร์, ..., 6 = เสาร์
-
-  // ตรวจสอบวันเสาร์-อาทิตย์
-  if (day === 0 || day === 6) {
+    fs.writeFileSync(
+      HOLIDAYS_FILE,
+      JSON.stringify(holidaysData, null, 2),
+      "utf8"
+    )
     return true
+  } catch (err) {
+    console.error("Error saving holidays:", err)
+    return false
   }
-
-  // ตรวจสอบวันหยุดพิเศษ
-  const today = now.toISOString().split("T")[0] // รูปแบบ YYYY-MM-DD
-  return holidaysData.holidays.includes(today)
 }
 
-// สร้าง instance ของ bot - ตั้งค่า polling: true เพียงครั้งเดียว
-const bot = new TelegramBot(token, { polling: true })
-botInitialized = true
+// ปรับปรุงฟังก์ชันแปลงวันที่ให้รองรับทั้งรูปแบบ dd/mm/yyyy และ d/m/yyyy
+function thaiDateToIsoDate(thaiDate) {
+  try {
+    // รองรับทั้ง dd/mm/yyyy และ d/m/yyyy
+    const datePattern = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/
+    const match = thaiDate.match(datePattern)
 
-// แสดงข้อมูลเวลาปัจจุบันของระบบ
-const currentServerTime = new Date()
-console.log(`Bot is running... Server time: ${currentServerTime.toISOString()}`)
-console.log(
-  `Server timezone offset: ${currentServerTime.getTimezoneOffset() / -60} hours`
-)
+    if (!match) {
+      botLog(
+        LOG_LEVELS.WARN,
+        "thaiDateToIsoDate",
+        `รูปแบบวันที่ไม่ถูกต้อง: ${thaiDate}`
+      )
+      return null
+    }
 
-// ฟังก์ชันสำหรับรูปแบบวันที่ เป็น พ.ศ.
+    const day = match[1].padStart(2, "0")
+    const month = match[2].padStart(2, "0")
+    const yearBE = parseInt(match[3], 10)
+    const yearCE = yearBE - 543 // แปลงจาก พ.ศ. เป็น ค.ศ.
+
+    const result = `${yearCE}-${month}-${day}`
+
+    // ตรวจสอบความถูกต้องของวันที่
+    if (!dayjs(result).isValid()) {
+      botLog(
+        LOG_LEVELS.WARN,
+        "thaiDateToIsoDate",
+        `วันที่ไม่ถูกต้องหลังจากแปลง: ${result}`
+      )
+      return null
+    }
+
+    return result
+  } catch (error) {
+    logError("thaiDateToIsoDate", error)
+    return null
+  }
+}
+
+// เพิ่มฟังก์ชันแปลงวันที่จาก ISO เป็นไทยที่รองรับเดือนแบบภาษาไทย
+function isoDateToThaiDateFull(isoDateStr) {
+  try {
+    const date = dayjs(isoDateStr)
+    if (!date.isValid()) {
+      botLog(
+        LOG_LEVELS.WARN,
+        "isoDateToThaiDateFull",
+        `วันที่ไม่ถูกต้อง: ${isoDateStr}`
+      )
+      return "ไม่ระบุ"
+    }
+
+    const thaiMonths = [
+      "มกราคม",
+      "กุมภาพันธ์",
+      "มีนาคม",
+      "เมษายน",
+      "พฤษภาคม",
+      "มิถุนายน",
+      "กรกฎาคม",
+      "สิงหาคม",
+      "กันยายน",
+      "ตุลาคม",
+      "พฤศจิกายน",
+      "ธันวาคม",
+    ]
+
+    const result = `${date.date()} ${thaiMonths[date.month()]} ${
+      date.year() + 543
+    }`
+    return result
+  } catch (error) {
+    logError("isoDateToThaiDateFull", error)
+    return "ไม่ระบุ"
+  }
+}
+
+// เพิ่มฟังก์ชันตรวจสอบความถูกต้องของวันที่
+function isValidThaiDate(thaiDate) {
+  // ตรวจสอบรูปแบบ dd/mm/yyyy
+  const datePattern = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/
+  const match = thaiDate.match(datePattern)
+
+  if (!match) return false
+
+  const day = parseInt(match[1], 10)
+  const month = parseInt(match[2], 10)
+  const yearBE = parseInt(match[3], 10)
+
+  // ตรวจสอบช่วงของค่า
+  if (day < 1 || day > 31) return false
+  if (month < 1 || month > 12) return false
+  if (yearBE < 2500 || yearBE > 2600) return false // ตรวจสอบว่าเป็น พ.ศ. ที่สมเหตุสมผล
+
+  const yearCE = yearBE - 543
+  const date = dayjs(`${yearCE}-${month}-${day}`)
+
+  // ตรวจสอบว่าเป็นวันที่ถูกต้อง (เช่น ไม่ใช่ 31/04/2568)
+  return date.isValid() && date.date() === day
+}
+
+function isoUTCToThaiDateTime(isoDateStr, includeSeconds = true) {
+  const date = dayjs(isoDateStr).utc()
+  if (!date.isValid()) return "ไม่ระบุ"
+  return date.format(
+    `DD/MM/${date.year() + 543} HH:mm${includeSeconds ? ":ss" : ""}`
+  )
+}
+
 function getThaiDate() {
-  const date = new Date()
-  const day = date.getDate()
-  const month = date.getMonth() + 1
-  const yearBE = date.getFullYear() + 543 // แปลงเป็นปี พ.ศ. โดยบวก 543
-  return `${day}/${month}/${yearBE}`
+  const date = dayjs().tz(THAI_TIMEZONE)
+  return date.format(`DD/MM/${date.year() + 543}`)
 }
 
-// ข้อความแจ้งเตือน
+// ฟังก์ชันตรวจสอบว่าวันนี้เป็นวันหยุดหรือไม่ - ปรับปรุงให้มีกลไกป้องกันการล้มเหลว
+async function isHoliday() {
+  try {
+    const now = dayjs().tz(THAI_TIMEZONE)
+    const day = now.day() // 0 = อาทิตย์, 1 = จันทร์, ..., 6 = เสาร์
+    const today = now.format("YYYY-MM-DD")
+
+    botLog(
+      LOG_LEVELS.DEBUG,
+      "isHoliday",
+      `ตรวจสอบวันหยุด: ${today}, วัน: ${day}`
+    )
+
+    // ตรวจสอบวันเสาร์-อาทิตย์
+    if (day === 0 || day === 6) {
+      botLog(LOG_LEVELS.INFO, "isHoliday", `${today} เป็นวันหยุดสุดสัปดาห์`)
+      return true
+    }
+
+    // ตรวจสอบวันหยุดพิเศษจากฐานข้อมูล
+    try {
+      const { getConnection } = require("./tidb-connection.js") // นำเข้าแบบมีเงื่อนไข
+      let conn = await getConnection()
+      const [rows] = await conn.query(
+        "SELECT * FROM holidays WHERE holiday_date = ?",
+        [today]
+      )
+      await conn.end()
+
+      if (rows.length > 0) {
+        botLog(
+          LOG_LEVELS.INFO,
+          "isHoliday",
+          `${today} เป็นวันหยุดพิเศษ: ${rows[0].holiday_name}`
+        )
+        return true
+      }
+
+      botLog(LOG_LEVELS.DEBUG, "isHoliday", `${today} ไม่เป็นวันหยุด`)
+      return false
+    } catch (dbError) {
+      logError("isHoliday-db", dbError)
+
+      // ถ้าเกิดข้อผิดพลาดในการตรวจสอบฐานข้อมูล ให้เช็คจาก JSON แทน (เผื่อกรณีฉุกเฉิน)
+      botLog(
+        LOG_LEVELS.WARN,
+        "isHoliday",
+        `เกิดข้อผิดพลาดในการตรวจสอบฐานข้อมูล ใช้ข้อมูลจาก JSON แทน`
+      )
+      return holidaysData.holidays.includes(today)
+    }
+  } catch (error) {
+    logError("isHoliday", error)
+    // ถ้าเกิดข้อผิดพลาดอื่นๆ ให้คืนค่า false (ถือว่าไม่ใช่วันหยุด) เพื่อให้บอทยังทำงานต่อไปได้
+    return false
+  }
+}
+
+// แยกฟังก์ชันตรวจสอบวันหยุดสุดสัปดาห์
+function isWeekend(date) {
+  const day = date.day(); // 0 = อาทิตย์, 1 = จันทร์, ..., 6 = เสาร์
+  return day === 0 || day === 6;
+}
+
+// ฟังก์ชันข้อความแจ้งเตือน
 function getCheckInReminderMessage() {
   return `⏰ อย่าลืมลงเวลาเข้างาน! วันที่ ${getThaiDate()}`
 }
@@ -153,454 +563,1638 @@ function getMorningMessage() {
 }
 
 function getEveningMessage() {
-  return `🌆 สวัสดีตอนเย็น! วันที่ ${getThaiDate()} \nขอบคุณสำหรับความทุ่มเทในวันนี้ 🙏`
+  return `🌆 สวัสดีตอนเย็น! วันที่ ${getThaiDate()} \nขอบคุณสำหรับความทุ่มเทในวันนี้นะครับ/คะ 🙏`
 }
 
-// ล้างทุก cron job ก่อนที่จะสร้างใหม่ (ป้องกันการซ้ำซ้อน)
-try {
-  for (const job of Object.values(cron.getTasks())) {
-    job.stop()
+// เพิ่ม endpoints สำหรับ health check
+app.get("/ping", (req, res) => {
+  botLog(LOG_LEVELS.DEBUG, "ping", "Health check received")
+  res.status(200).send("pong")
+})
+
+app.get("/health", (req, res) => {
+  try {
+    const serverTimeInfo = getServerTimeInfo()
+
+    const healthData = {
+      status: "ok",
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+      bot_initialized: botInitialized,
+      server_time: {
+        utc: serverTimeInfo.utcTime,
+        thai: serverTimeInfo.thaiTime,
+        offset: serverTimeInfo.offset,
+      },
+    }
+
+    botLog(LOG_LEVELS.DEBUG, "health", "Health check response", healthData)
+    res.status(200).json(healthData)
+  } catch (error) {
+    logError("health", error)
+    res.status(500).json({
+      status: "error",
+      message: "Failed to get health information",
+      error: error.message,
+    })
   }
-} catch (error) {
-  console.log("No existing cron tasks to clear")
+})
+
+// ตั้งค่า webhook สำหรับ Telegram
+app.post(`/bot${token}`, (req, res) => {
+  try {
+    botLog(LOG_LEVELS.DEBUG, "webhook", "Received update from Telegram", {
+      updateId: req.body.update_id,
+      chatId: req.body.message?.chat?.id,
+    })
+
+    bot.processUpdate(req.body)
+    res.sendStatus(200)
+  } catch (error) {
+    logError("webhook", error)
+    // ต้องส่ง 200 กลับไปเสมอเพื่อป้องกัน Telegram ส่งข้อมูลเดิมซ้ำ
+    res.sendStatus(200)
+  }
+})
+
+// เส้นทางสำหรับการตั้งค่า webhook
+app.get("/webhook-info", async (req, res) => {
+  try {
+    const info = await bot.getWebHookInfo()
+    console.log("Current webhook info:", info)
+    res.json(info)
+  } catch (error) {
+    console.error("Error getting webhook info:", error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// เส้นทางรีเซ็ต webhook
+app.get("/reset-webhook", async (req, res) => {
+  try {
+    botLog(LOG_LEVELS.INFO, "resetWebhook", "Deleting webhook...")
+    await bot.deleteWebHook()
+
+    botLog(
+      LOG_LEVELS.INFO,
+      "resetWebhook",
+      `Setting new webhook to: ${appUrl}/bot${token}`
+    )
+    const result = await bot.setWebHook(`${appUrl}/bot${token}`)
+
+    botLog(LOG_LEVELS.INFO, "resetWebhook", "Webhook reset result:", result)
+    res.send(`Webhook reset successfully: ${result}`)
+  } catch (error) {
+    logError("resetWebhook", error)
+    res.status(500).send(`Error: ${error.message}`)
+  }
+})
+
+// ตั้งค่า cron jobs - ปรับปรุงให้ป้องกันการตั้งค่าซ้ำซ้อน
+function setupCronJobs() {
+  try {
+    // ป้องกันการเรียกซ้ำ
+    if (cronJobsInitialized) {
+      botLog(LOG_LEVELS.INFO, "setupCronJobs", "Cron jobs ได้รับการตั้งค่าแล้ว")
+      return
+    }
+
+    // ล้างทุก cron job ก่อนที่จะสร้างใหม่ (ป้องกันการซ้ำซ้อน)
+    botLog(
+      LOG_LEVELS.INFO,
+      "setupCronJobs",
+      "กำลังล้าง cron jobs เดิมและตั้งค่าใหม่"
+    )
+    try {
+      for (const job of Object.values(cron.getTasks())) {
+        job.stop()
+      }
+    } catch (error) {
+      botLog(
+        LOG_LEVELS.INFO,
+        "setupCronJobs",
+        "ไม่มี cron jobs เดิมที่ต้องล้าง"
+      )
+    }
+
+    // เวลาไทย 7:25 น. = UTC 00:25 น. (จันทร์-ศุกร์)
+    botLog(
+      LOG_LEVELS.INFO,
+      "setupCronJobs",
+      "ตั้งค่า cron job แจ้งเตือนเข้างาน 7:25 น. (00:25 UTC) - เฉพาะวันทำงาน"
+    )
+
+    const morningReminder = cron.schedule("25 0 * * 1-5", async () => {
+      try {
+        if (await isHoliday()) {
+          botLog(
+            LOG_LEVELS.INFO,
+            "morningReminder",
+            "วันนี้เป็นวันหยุด ข้ามการส่งข้อความ"
+          )
+          return
+        }
+
+        botLog(
+          LOG_LEVELS.INFO,
+          "morningReminder",
+          `กำลังส่งข้อความแจ้งเตือนลงเวลาเข้างาน (7:25 น.) ${new Date().toISOString()}`
+        )
+
+        const morningCheckinMessage =
+          getMorningMessage() + "\n\n" + getCheckInReminderMessage()
+
+        // ส่งข้อความไปยังกลุ่ม/ช่อง
+        if (chatId) {
+          try {
+            await bot.sendMessage(chatId, morningCheckinMessage)
+            botLog(
+              LOG_LEVELS.INFO,
+              "morningReminder",
+              "ส่งข้อความไปยังกลุ่ม/ช่องสำเร็จ"
+            )
+          } catch (err) {
+            logError("morningReminder-group", err)
+          }
+        }
+
+        // ส่งข้อความไปยังผู้ใช้แต่ละคน
+        const subscribers = await getSubscribedUsers()
+        botLog(
+          LOG_LEVELS.INFO,
+          "morningReminder",
+          `กำลังส่งข้อความไปยังผู้ใช้ ${subscribers.length} คน`
+        )
+
+        for (const user of subscribers) {
+          try {
+            await bot.sendMessage(user.chatId, morningCheckinMessage)
+            botLog(
+              LOG_LEVELS.DEBUG,
+              "morningReminder",
+              `ส่งข้อความไปยังผู้ใช้ ${
+                user.username || user.firstName || user.chatId
+              } สำเร็จ`
+            )
+          } catch (err) {
+            logError("morningReminder-user", err)
+            botLog(
+              LOG_LEVELS.ERROR,
+              "morningReminder",
+              `ไม่สามารถส่งข้อความไปยังผู้ใช้ ${user.chatId} ได้`
+            )
+          }
+        }
+
+        botLog(
+          LOG_LEVELS.INFO,
+          "morningReminder",
+          "ส่งข้อความแจ้งเตือน 7:25 น. เสร็จสิ้น"
+        )
+      } catch (err) {
+        logError("morningReminder", err)
+      }
+    })
+
+    // เวลาไทย 8:25 น. = UTC 01:25 น. (จันทร์-ศุกร์)
+    botLog(
+      LOG_LEVELS.INFO,
+      "setupCronJobs",
+      "ตั้งค่า cron job ข้อความตอนเช้า 8:25 น. (01:25 UTC) - เฉพาะวันทำงาน"
+    )
+
+    const morningMessage = cron.schedule("25 1 * * 1-5", async () => {
+      try {
+        if (await isHoliday()) {
+          botLog(
+            LOG_LEVELS.INFO,
+            "morningMessage",
+            "วันนี้เป็นวันหยุด ข้ามการส่งข้อความ"
+          )
+          return
+        }
+
+        botLog(
+          LOG_LEVELS.INFO,
+          "morningMessage",
+          `กำลังส่งข้อความตอนเช้า (8:25 น.) ${new Date().toISOString()}`
+        )
+
+        const morningFullMessage =
+          getMorningMessage() + "\n\n" + getCheckInReminderMessage()
+
+        // ส่งข้อความไปยังกลุ่ม/ช่อง
+        if (chatId) {
+          try {
+            await bot.sendMessage(chatId, morningFullMessage)
+            botLog(
+              LOG_LEVELS.INFO,
+              "morningMessage",
+              "ส่งข้อความไปยังกลุ่ม/ช่องสำเร็จ"
+            )
+          } catch (err) {
+            logError("morningMessage-group", err)
+          }
+        }
+
+        // ส่งข้อความไปยังผู้ใช้แต่ละคน
+        const subscribers = await getSubscribedUsers()
+        botLog(
+          LOG_LEVELS.INFO,
+          "morningMessage",
+          `กำลังส่งข้อความไปยังผู้ใช้ ${subscribers.length} คน`
+        )
+
+        for (const user of subscribers) {
+          try {
+            await bot.sendMessage(user.chatId, morningFullMessage)
+            botLog(
+              LOG_LEVELS.DEBUG,
+              "morningMessage",
+              `ส่งข้อความไปยังผู้ใช้ ${
+                user.username || user.firstName || user.chatId
+              } สำเร็จ`
+            )
+          } catch (err) {
+            logError("morningMessage-user", err)
+            botLog(
+              LOG_LEVELS.ERROR,
+              "morningMessage",
+              `ไม่สามารถส่งข้อความไปยังผู้ใช้ ${user.chatId} ได้`
+            )
+          }
+        }
+
+        botLog(
+          LOG_LEVELS.INFO,
+          "morningMessage",
+          "ส่งข้อความตอนเช้า 8:25 น. เสร็จสิ้น"
+        )
+      } catch (err) {
+        logError("morningMessage", err)
+      }
+    })
+
+    // เวลาไทย 15:25 น. = UTC 08:25 น. (จันทร์-ศุกร์)
+    botLog(
+      LOG_LEVELS.INFO,
+      "setupCronJobs",
+      "ตั้งค่า cron job แจ้งเตือนออกงาน 15:25 น. (08:25 UTC) - เฉพาะวันทำงาน"
+    )
+
+    const eveningReminder = cron.schedule("25 8 * * 1-5", async () => {
+      try {
+        if (await isHoliday()) {
+          botLog(
+            LOG_LEVELS.INFO,
+            "eveningReminder",
+            "วันนี้เป็นวันหยุด ข้ามการส่งข้อความ"
+          )
+          return
+        }
+
+        botLog(
+          LOG_LEVELS.INFO,
+          "eveningReminder",
+          `กำลังส่งข้อความแจ้งเตือนลงเวลาออกงาน (15:25 น.) ${new Date().toISOString()}`
+        )
+
+        const eveningCheckoutMessage =
+          getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
+
+        // ส่งข้อความไปยังกลุ่ม/ช่อง
+        if (chatId) {
+          try {
+            await bot.sendMessage(chatId, eveningCheckoutMessage)
+            botLog(
+              LOG_LEVELS.INFO,
+              "eveningReminder",
+              "ส่งข้อความไปยังกลุ่ม/ช่องสำเร็จ"
+            )
+          } catch (err) {
+            logError("eveningReminder-group", err)
+          }
+        }
+
+        // ส่งข้อความไปยังผู้ใช้แต่ละคน
+        const subscribers = await getSubscribedUsers()
+        botLog(
+          LOG_LEVELS.INFO,
+          "eveningReminder",
+          `กำลังส่งข้อความไปยังผู้ใช้ ${subscribers.length} คน`
+        )
+
+        for (const user of subscribers) {
+          try {
+            await bot.sendMessage(user.chatId, eveningCheckoutMessage)
+            botLog(
+              LOG_LEVELS.DEBUG,
+              "eveningReminder",
+              `ส่งข้อความไปยังผู้ใช้ ${
+                user.username || user.firstName || user.chatId
+              } สำเร็จ`
+            )
+          } catch (err) {
+            logError("eveningReminder-user", err)
+            botLog(
+              LOG_LEVELS.ERROR,
+              "eveningReminder",
+              `ไม่สามารถส่งข้อความไปยังผู้ใช้ ${user.chatId} ได้`
+            )
+          }
+        }
+
+        botLog(
+          LOG_LEVELS.INFO,
+          "eveningReminder",
+          "ส่งข้อความแจ้งเตือน 15:25 น. เสร็จสิ้น"
+        )
+      } catch (err) {
+        logError("eveningReminder", err)
+      }
+    })
+
+    // เวลาไทย 16:25 น. = UTC 09:25 น. (จันทร์-ศุกร์)
+    botLog(
+      LOG_LEVELS.INFO,
+      "setupCronJobs",
+      "ตั้งค่า cron job ข้อความตอนเย็น 16:25 น. (09:25 UTC) - เฉพาะวันทำงาน"
+    )
+
+    const eveningMessage = cron.schedule("25 9 * * 1-5", async () => {
+      try {
+        if (await isHoliday()) {
+          botLog(
+            LOG_LEVELS.INFO,
+            "eveningMessage",
+            "วันนี้เป็นวันหยุด ข้ามการส่งข้อความ"
+          )
+          return
+        }
+
+        botLog(
+          LOG_LEVELS.INFO,
+          "eveningMessage",
+          `กำลังส่งข้อความตอนเย็น (16:25 น.) ${new Date().toISOString()}`
+        )
+
+        const eveningFullMessage =
+          getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
+
+        // ส่งข้อความไปยังกลุ่ม/ช่อง
+        if (chatId) {
+          try {
+            await bot.sendMessage(chatId, eveningFullMessage)
+            botLog(
+              LOG_LEVELS.INFO,
+              "eveningMessage",
+              "ส่งข้อความไปยังกลุ่ม/ช่องสำเร็จ"
+            )
+          } catch (err) {
+            logError("eveningMessage-group", err)
+          }
+        }
+
+        // ส่งข้อความไปยังผู้ใช้แต่ละคน
+        const subscribers = await getSubscribedUsers()
+        botLog(
+          LOG_LEVELS.INFO,
+          "eveningMessage",
+          `กำลังส่งข้อความไปยังผู้ใช้ ${subscribers.length} คน`
+        )
+
+        for (const user of subscribers) {
+          try {
+            await bot.sendMessage(user.chatId, eveningFullMessage)
+            botLog(
+              LOG_LEVELS.DEBUG,
+              "eveningMessage",
+              `ส่งข้อความไปยังผู้ใช้ ${
+                user.username || user.firstName || user.chatId
+              } สำเร็จ`
+            )
+          } catch (err) {
+            logError("eveningMessage-user", err)
+            botLog(
+              LOG_LEVELS.ERROR,
+              "eveningMessage",
+              `ไม่สามารถส่งข้อความไปยังผู้ใช้ ${user.chatId} ได้`
+            )
+          }
+        }
+
+        botLog(
+          LOG_LEVELS.INFO,
+          "eveningMessage",
+          "ส่งข้อความตอนเย็น 16:25 น. เสร็จสิ้น"
+        )
+      } catch (err) {
+        logError("eveningMessage", err)
+      }
+    })
+
+    botLog(LOG_LEVELS.INFO, "setupCronJobs", "ตั้งค่า cron jobs เสร็จสิ้น")
+
+    // ตั้งค่า testCron แต่ยังไม่เริ่มทำงาน
+    testCron = cron.schedule(
+      "*/2 * * * *",
+      async () => {
+        try {
+          if (!process.env.TELEGRAM_CHAT_ID) {
+            botLog(
+              LOG_LEVELS.ERROR,
+              "testCron",
+              "ไม่ได้ตั้งค่า TELEGRAM_CHAT_ID ไม่สามารถส่งข้อความทดสอบได้"
+            )
+            return
+          }
+
+          // เช็ควันหยุดเพื่อทดสอบฟังก์ชัน isHoliday
+          const holidayToday = await isHoliday()
+          const holidayStatus = holidayToday ? "เป็นวันหยุด" : "ไม่ใช่วันหยุด"
+
+          const now = dayjs().utc() // เวลา UTC
+          const thaiNow = now.tz(THAI_TIMEZONE) // เวลาไทย (UTC+7)
+          botLog(
+            LOG_LEVELS.INFO,
+            "testCron",
+            `ทำงานตามกำหนดเวลาที่ ${now.toISOString()}`
+          )
+
+          // แปลงเวลาเซิร์ฟเวอร์ (UTC)
+          const serverTime = now.format(
+            `DD/MM/${now.year() + 543} - HH:mm น. (UTC)`
+          )
+          // แปลงเวลาไทย (UTC+7)
+          const thaiTime = thaiNow.format(
+            `DD/MM/${thaiNow.year() + 543} - HH:mm น. (UTC+7)`
+          )
+          // คำนวณ timezone offset
+          const offsetMinutesTotal = now.utcOffset() // UTC offset (0)
+          const thaiOffsetMinutes = thaiNow.utcOffset() // UTC+7 offset (420)
+          const offsetDiff = Math.abs(thaiOffsetMinutes - offsetMinutesTotal)
+          const offsetHours = Math.floor(offsetDiff / 60)
+          const offsetMinutes = offsetDiff % 60
+
+          const message = `
+🔔 ทดสอบการแจ้งเตือนทุก 2 นาที - สำเร็จ!
+
+เวลาเซิร์ฟเวอร์: ${serverTime}
+เวลาของไทย: ${thaiTime}
+Timezone offset: ${offsetHours} hours ${offsetMinutes} mins
+สถานะวันหยุด: ${holidayStatus}
+          `
+
+          try {
+            await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, message.trim())
+            botLog(
+              LOG_LEVELS.INFO,
+              "testCron",
+              `ส่งข้อความทดสอบไปยัง ${process.env.TELEGRAM_CHAT_ID} สำเร็จ`
+            )
+          } catch (sendError) {
+            logError("testCron-send", sendError)
+          }
+        } catch (err) {
+          logError("testCron", err)
+        }
+      },
+      {
+        scheduled: false, // ไม่ให้เริ่มอัตโนมัติ
+        timezone: "UTC",
+      }
+    )
+
+    // เก็บ references ไว้
+    cronJobsInitialized = true
+    return {
+      morningReminder,
+      morningMessage,
+      eveningReminder,
+      eveningMessage,
+      testCron,
+    }
+  } catch (error) {
+    logError("setupCronJobs", error)
+    return null
+  }
 }
 
-// ===== แก้ไขเวลา cron jobs ให้ตรงกับเวลาประเทศไทย โดยปรับให้เป็นเวลา UTC และตรวจสอบวันหยุด =====
-// เวลาไทย 7:25 น. = UTC 00:25 น. (จันทร์-ศุกร์)
-console.log(
-  "Setting up check-in reminder cron job for 7:25 AM Thailand time (00:25 UTC) - Workdays only"
-)
-const morningReminder = cron.schedule("25 0 * * 1-5", () => {
-  // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
-  if (isHoliday()) {
-    console.log("Today is a holiday. Skipping check-in reminder.")
-    return
+// เพิ่มฟังก์ชันใน index.js
+function isAdmin(chatId) {
+  return String(chatId) === process.env.ADMIN_CHAT_ID
+}
+
+
+// การจัดการ handlers ของบอท
+// กำหนดคำสั่งและสิทธิ์
+const COMMAND_PERMISSIONS = {
+  // คำสั่งสำหรับผู้ใช้ทั่วไป
+  myinfo: {
+    permission: "user",
+    description: "ดูข้อมูลของคุณในระบบ",
+    regex: /^\/myinfo$/,
+  },
+  subscribe: {
+    permission: "user",
+    description: "สมัครรับการแจ้งเตือน",
+    regex: /^\/subscribe$/,
+  },
+  unsubscribe: {
+    permission: "user",
+    description: "ยกเลิกรับการแจ้งเตือน",
+    regex: /^\/unsubscribe$/,
+  },
+  status: {
+    permission: "user",
+    description: "ตรวจสอบสถานะของบอท",
+    regex: /^\/status$/,
+  },
+  list_holidays: {
+    permission: "user",
+    description: "แสดงรายการวันหยุดพิเศษทั้งหมด",
+    regex: /^\/list_holidays$/,
+  },
+  search_holiday: {
+    permission: "user",
+    description: "ค้นหาวันหยุด เช่น /search_holiday วันปีใหม่",
+    regex: /^\/search_holiday\s+(.+)$/,
+  },
+
+  // คำสั่งสำหรับแอดมิน
+  servertime: {
+    permission: "admin",
+    description: "ตรวจสอบเวลาของเซิร์ฟเวอร์",
+    regex: /^\/servertime$/,
+  },
+  checkin: {
+    permission: "admin",
+    description: "ดูข้อความแจ้งเตือนลงเวลาเข้างาน",
+    regex: /^\/checkin$/,
+  },
+  checkout: {
+    permission: "admin",
+    description: "ดูข้อความแจ้งเตือนลงเวลาออกจากงาน",
+    regex: /^\/checkout$/,
+  },
+  morning: {
+    permission: "admin",
+    description: "ดูข้อความตอนเช้า",
+    regex: /^\/morning$/,
+  },
+  evening: {
+    permission: "admin",
+    description: "ดูข้อความตอนเย็น",
+    regex: /^\/evening$/,
+  },
+  morning_full: {
+    permission: "admin",
+    description: "ดูข้อความเต็มของเวลา 7:25 และ 8:25 (เช้า+เข้างาน)",
+    regex: /^\/morning_full$/,
+  },
+  evening_full: {
+    permission: "admin",
+    description: "ดูข้อความเต็มของเวลา 15:25 และ 16:25 (เย็น+ออกงาน)",
+    regex: /^\/evening_full$/,
+  },
+  add_holiday: {
+    permission: "admin",
+    description: "เพิ่มวันหยุดพิเศษ เช่น /add_holiday 2568/01/01 วันขึ้นปีใหม่",
+    regex: /^\/add_holiday\s+(\d{1,2}\/\d{1,2}\/\d{4})(?:\s+(.+))?$/,
+  },
+  delete_holiday: {
+    permission: "admin",
+    description: "ลบวันหยุดพิเศษ เช่น /delete_holiday 2568/01/01",
+    regex: /^\/delete_holiday\s+(\d{1,2}\/\d{1,2}\/\d{4})$/,
+  },
+  reload_holidays: {
+    permission: "admin",
+    description: "โหลดข้อมูลวันหยุดจากไฟล์ใหม่",
+    regex: /^\/reload_holidays$/,
+  },
+  import_holidays: {
+    permission: "admin",
+    description: "นำเข้าข้อมูลวันหยุดจาก JSON (ถ้ายังไม่มีข้อมูลในฐานข้อมูล)",
+    regex: /^\/import_holidays$/,
+  },
+  force_import_holidays: {
+    permission: "admin",
+    description: "บังคับนำเข้าข้อมูลวันหยุดจาก JSON (ลบข้อมูลเดิมทั้งหมด)",
+    regex: /^\/force_import_holidays$/,
+  },
+  dbstatus: {
+    permission: "admin",
+    description: "ดูสถานะฐานข้อมูลและจำนวนผู้ใช้",
+    regex: /^\/dbstatus$/,
+  },
+  start_test: {
+    permission: "admin",
+    description: "เริ่มการทดสอบส่งข้อความทุก 2 นาที",
+    regex: /^\/start_test$/,
+  },
+  stop_test: {
+    permission: "admin",
+    description: "หยุดการทดสอบ",
+    regex: /^\/stop_test$/,
+  },
+  reset_webhook: {
+    permission: "admin",
+    description: "รีเซ็ต webhook (ใช้เมื่อบอทไม่ตอบสนอง)",
+    regex: /^\/reset_webhook$/,
+  },
+
+  // คำสั่งพิเศษ
+  start: {
+    permission: "all", // ทุกคนสามารถใช้คำสั่ง /start ได้
+    description: "เริ่มต้นการใช้งานบอท - แสดงข้อความช่วยเหลือ",
+    regex: /^\/ (start|help)$/
+  },
+}
+
+// สร้างอาร์เรย์คำสั่งสำหรับการแสดงในข้อความ
+function buildCommandLists() {
+  const USER_COMMANDS = Object.entries(COMMAND_PERMISSIONS)
+    .filter(([_, cmd]) => cmd.permission === "user" || cmd.permission === "all")
+    .map(([cmdName, cmd]) => `/${cmdName} - ${cmd.description}`);
+  
+  const ADMIN_COMMANDS = Object.entries(COMMAND_PERMISSIONS)
+    .filter(([_, cmd]) => cmd.permission === "admin")
+    .map(([cmdName, cmd]) => `/${cmdName} - ${cmd.description}`);
+  
+  return { USER_COMMANDS, ADMIN_COMMANDS };
+}
+
+// ฟังก์ชันตรวจสอบสิทธิ์และส่งข้อความแจ้งเตือนถ้าไม่มีสิทธิ์
+async function checkPermission(chatId, permission) {
+  // ถ้าเป็นคำสั่งสำหรับทุกคน
+  if (permission === "all") return true;
+  
+  // ถ้าเป็นคำสั่งสำหรับแอดมิน ตรวจสอบว่าเป็นแอดมินหรือไม่
+  if (permission === "admin" && !isAdmin(chatId)) {
+    await bot.sendMessage(
+      chatId,
+      "⛔ คำสั่งนี้สงวนไว้สำหรับผู้ดูแลระบบเท่านั้น"
+    );
+    botLog(
+      LOG_LEVELS.WARN,
+      "permission-check",
+      `ผู้ใช้ ${chatId} พยายามเรียกใช้คำสั่งแอดมิน`
+    );
+    return false;
   }
+  
+  return true;
+}
 
-  console.log(
-    "Sending check-in reminder (7:25 Thai time)... " + new Date().toISOString()
-  )
-  const morningCheckinMessage =
-    getMorningMessage() + "\n\n" + getCheckInReminderMessage()
-  bot
-    .sendMessage(chatId, morningCheckinMessage)
-    .then(() => console.log("7:25 message sent successfully"))
-    .catch((err) => console.error("Error sending message:", err))
-})
+// ฟังก์ชันตั้งค่า event handlers
+function setupEventHandlers() {
+  try {
+    // ป้องกันการเรียกซ้ำ
+    if (eventHandlersInitialized) {
+      botLog(
+        LOG_LEVELS.INFO,
+        "setupEventHandlers",
+        "Event handlers ได้รับการตั้งค่าแล้ว"
+      );
+      return;
+    }
 
-// เวลาไทย 8:25 น. = UTC 01:25 น. (จันทร์-ศุกร์)
-console.log(
-  "Setting up morning message cron job for 8:25 AM Thailand time (01:25 UTC) - Workdays only"
-)
-const morningMessage = cron.schedule("25 1 * * 1-5", () => {
-  // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
-  if (isHoliday()) {
-    console.log("Today is a holiday. Skipping morning message.")
-    return
-  }
+    // ล้าง event listeners เดิมทั้งหมดก่อนเพิ่มใหม่
+    botLog(
+      LOG_LEVELS.INFO,
+      "setupEventHandlers",
+      "กำลังตั้งค่า event handlers ใหม่"
+    );
+    bot.removeAllListeners();
 
-  console.log(
-    "Sending morning message (8:25 Thai time)... " + new Date().toISOString()
-  )
-  const morningFullMessage =
-    getMorningMessage() + "\n\n" + getCheckInReminderMessage()
-  bot
-    .sendMessage(chatId, morningFullMessage)
-    .then(() => console.log("8:25 message sent successfully"))
-    .catch((err) => console.error("Error sending message:", err))
-})
+    // เก็บ references ของทุก event handlers เพื่อป้องกันการซ้ำซ้อน
+    const handlers = {};
+    
+    // สร้างรายการคำสั่งสำหรับแสดงใน /start
+    const { USER_COMMANDS, ADMIN_COMMANDS } = buildCommandLists();
 
-// เวลาไทย 15:25 น. = UTC 08:25 น. (จันทร์-ศุกร์)
-console.log(
-  "Setting up check-out reminder cron job for 15:25 PM Thailand time (08:25 UTC) - Workdays only"
-)
-const eveningReminder = cron.schedule("25 8 * * 1-5", () => {
-  // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
-  if (isHoliday()) {
-    console.log("Today is a holiday. Skipping check-out reminder.")
-    return
-  }
+    // รับคำสั่งพื้นฐาน /start
+    handlers.start = bot.onText(/^\/start$/, async (msg) => {
+      try {
+        const chatId = msg.chat.id;
+        const isAdminUser = isAdmin(chatId);
+        botLog(
+          LOG_LEVELS.INFO,
+          "command-start",
+          `ผู้ใช้ ${chatId} เรียกใช้คำสั่ง /start (Admin: ${isAdminUser})`
+        );
 
-  console.log(
-    "Sending check-out reminder (15:25 Thai time)... " +
-      new Date().toISOString()
-  )
-  const eveningCheckoutMessage =
-    getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
-  bot
-    .sendMessage(chatId, eveningCheckoutMessage)
-    .then(() => console.log("15:25 message sent successfully"))
-    .catch((err) => console.error("Error sending message:", err))
-})
-
-// เวลาไทย 16:25 น. = UTC 09:25 น. (จันทร์-ศุกร์)
-console.log(
-  "Setting up evening message cron job for 16:25 PM Thailand time (09:25 UTC) - Workdays only"
-)
-const eveningMessage = cron.schedule("25 9 * * 1-5", () => {
-  // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
-  if (isHoliday()) {
-    console.log("Today is a holiday. Skipping evening message.")
-    return
-  }
-
-  console.log(
-    "Sending evening message (16:25 Thai time)... " + new Date().toISOString()
-  )
-  const eveningFullMessage =
-    getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
-  bot
-    .sendMessage(chatId, eveningFullMessage)
-    .then(() => console.log("16:25 message sent successfully"))
-    .catch((err) => console.error("Error sending evening message:", err))
-})
-
-// ทดสอบส่งข้อความทุก 2 นาที ปิดเมื่อทดสอบเสร็จแล้ว
-// console.log("Setting up test cron job to run every 2 minutes")
-// const testCron = cron.schedule("*/2 * * * *", () => {
-//   // ตรวจสอบว่าเป็นวันหยุดพิเศษหรือไม่
-//   if (isHoliday()) {
-//     console.log("Today is a holiday. Skipping test message.")
-//     return
-//   }
-
-//   const now = new Date()
-//   const thaiTime = new Date(now.getTime() + 7 * 60 * 60 * 1000)
-//   console.log(`Test cron executed at ${now.toISOString()}`)
-
-//   bot.sendMessage(
-//     chatId,
-//     "🔔 ทดสอบการแจ้งเตือนทุก 2 นาที - สำเร็จ!" +
-//       "\n\nเวลาเซิร์ฟเวอร์: " +
-//       now.toISOString() +
-//       "\nเวลาของไทย: " +
-//       thaiTime.toISOString()
-//   )
-// })
-
-// เก็บ references ของทุก event handlers เพื่อป้องกันการซ้ำซ้อน
-const handlers = {}
-
-// ล้าง event listeners เดิมทั้งหมดก่อนเพิ่มใหม่
-bot.removeAllListeners()
-
-// รับคำสั่งพื้นฐาน
-handlers.start = bot.onText(/^\/start$/, (msg) => {
-  const welcomeMessage = `
+        let welcomeMessage = `
 สวัสดีครับ/ค่ะ! 👋
 บอทนี้จะส่งข้อความแจ้งเตือนทุกวันในเวลา:
-- ⏰ 7:25 น. (แจ้งเตือนลงเวลาเข้างาน + ข้อความตอนเช้า)
+
+- ⏰ 7:25 น. (ข้อความตอนเช้า + แจ้งเตือนลงเวลาเข้างาน)
 - 🌞 8:25 น. (ข้อความตอนเช้า + แจ้งเตือนลงเวลาเข้างาน)
-- ⏰ 15:25 น. (แจ้งเตือนลงเวลาออกจากงาน + ข้อความตอนเย็น)
+- ⏰ 15:25 น. (ข้อความตอนเย็น + แจ้งเตือนลงเวลาออกจากงาน)
 - 🌆 16:25 น. (ข้อความตอนเย็น + แจ้งเตือนลงเวลาออกจากงาน)
 
-หมายเหตุ: บอทจะไม่ส่งข้อความในวันเสาร์-อาทิตย์และวันหยุดพิเศษ
+หมายเหตุ: บอทจะไม่ส่งข้อความในวันเสาร์-อาทิตย์ และวันหยุดพิเศษ
 
 คำสั่งพื้นฐาน:
-/status - ตรวจสอบสถานะของบอท
-/servertime - ตรวจสอบเวลาของเซิร์ฟเวอร์
-/checkin - ดูข้อความแจ้งเตือนลงเวลาเข้างาน
-/checkout - ดูข้อความแจ้งเตือนลงเวลาออกจากงาน
-/morning - ดูข้อความตอนเช้า
-/evening - ดูข้อความตอนเย็น
-/morning_full - ดูข้อความเต็มของเวลา 7:25 และ 8:25 (เช้า+เข้างาน)
-/evening_full - ดูข้อความเต็มของเวลา 15:25 และ 16:25 (เย็น+ออกงาน)
-/list_holidays - แสดงรายการวันหยุดพิเศษทั้งหมด
-/reload_holidays - โหลดข้อมูลวันหยุดจากไฟล์ใหม่
-  `
+${USER_COMMANDS.join("\n")}
+`;
 
-  bot
-    .sendMessage(msg.chat.id, welcomeMessage)
-    .then(() => console.log("Welcome message sent"))
-    .catch((err) => console.error("Error sending welcome message:", err))
-})
+        if (isAdminUser) {
+          // เพิ่มคำสั่งสำหรับแอดมิน
+          welcomeMessage += `
+  
+🔑 คำสั่งสำหรับผู้ดูแลระบบ:
+${ADMIN_COMMANDS.join("\n")}
+`;
+        }
 
-// ตรวจสอบเวลาของเซิร์ฟเวอร์
-handlers.servertime = bot.onText(/^\/servertime$/, (msg) => {
-  const now = new Date()
-  const thaiTime = new Date(now.getTime() + 7 * 60 * 60 * 1000)
+        await bot.sendMessage(chatId, welcomeMessage);
+        botLog(
+          LOG_LEVELS.INFO,
+          "command-start",
+          `ส่งข้อความต้อนรับให้ ${
+            isAdminUser ? "แอดมิน" : "ผู้ใช้"
+          }: ${chatId} สำเร็จ`
+        );
+      } catch (error) {
+        logError("command-start", error);
+      }
+    });
+
+    // ลงทะเบียนคำสั่งทั้งหมด (ยกเว้น /start ที่ลงทะเบียนไปแล้ว)
+    for (const [cmdName, cmdConfig] of Object.entries(COMMAND_PERMISSIONS)) {
+      if (cmdName === "start") continue; // ข้ามการลงทะเบียน /start เพราะได้ลงทะเบียนไปแล้ว
+      
+      handlers[cmdName] = bot.onText(cmdConfig.regex, async (msg, match) => {
+        try {
+          const chatId = msg.chat.id;
+          const username = msg.from?.username || "";
+          const firstName = msg.from?.first_name || "";
+          
+          botLog(
+            LOG_LEVELS.INFO,
+            `command-${cmdName}`,
+            `ผู้ใช้ ${username || firstName || chatId} เรียกใช้คำสั่ง /${cmdName}`
+          );
+          
+          // ตรวจสอบสิทธิ์
+          if (!await checkPermission(chatId, cmdConfig.permission)) {
+            return;
+          }
+          
+          // ดำเนินการตามคำสั่ง
+          await handleCommand(cmdName, msg, match);
+          
+        } catch (error) {
+          logError(`command-${cmdName}`, error);
+          try {
+            await bot.sendMessage(
+              msg.chat.id,
+              `❌ เกิดข้อผิดพลาดในการใช้คำสั่ง /${cmdName} โปรดลองอีกครั้ง`
+            );
+          } catch (sendError) {
+            logError(`command-${cmdName}-sendError`, sendError);
+          }
+        }
+      });
+    }
+
+    botLog(
+      LOG_LEVELS.INFO,
+      "setupEventHandlers",
+      "ตั้งค่า event handlers เสร็จสิ้น"
+    );
+    
+    // ตั้งค่าสถานะว่าได้เริ่มต้นแล้ว
+    eventHandlersInitialized = true;
+    return handlers;
+  } catch (error) {
+    logError("setupEventHandlers", error);
+    return {};
+  }
+}
+
+// ฟังก์ชันจัดการคำสั่งที่แยกต่างหาก
+async function handleCommand(cmdName, msg, match) {
+  const chatId = msg.chat.id;
+  const username = msg.from?.username || "";
+  const firstName = msg.from?.first_name || "";
+  
+  switch(cmdName) {
+    case "servertime":
+      await handleServertime(msg);
+      break;
+      
+    case "status":
+      await bot.sendMessage(
+        chatId,
+        "✅ บอทกำลังทำงานปกติ และพร้อมส่งข้อความแจ้งเตือนตามเวลาที่กำหนด!"
+      );
+      botLog(
+        LOG_LEVELS.INFO,
+        "command-status",
+        `ส่งข้อมูลสถานะให้ผู้ใช้ ${chatId} สำเร็จ`
+      );
+      break;
+      
+    case "subscribe":
+      await handleSubscribe(msg);
+      break;
+      
+    case "unsubscribe":
+      await handleUnsubscribe(msg);
+      break;
+      
+    case "myinfo":
+      await handleMyInfo(msg);
+      break;
+      
+    case "checkin":
+      await bot.sendMessage(chatId, getCheckInReminderMessage());
+      botLog(
+        LOG_LEVELS.INFO,
+        "command-checkin",
+        `ส่งข้อความแจ้งเตือนลงเวลาเข้างานให้ ${
+          username || firstName || chatId
+        } สำเร็จ`
+      );
+      break;
+      
+    case "checkout":
+      await bot.sendMessage(chatId, getCheckOutReminderMessage());
+      botLog(
+        LOG_LEVELS.INFO,
+        "command-checkout",
+        `ส่งข้อความแจ้งเตือนลงเวลาออกงานให้ ${
+          username || firstName || chatId
+        } สำเร็จ`
+      );
+      break;
+      
+    case "morning":
+      await bot.sendMessage(chatId, getMorningMessage());
+      botLog(
+        LOG_LEVELS.INFO,
+        "command-morning",
+        `ส่งข้อความตอนเช้าให้ ${username || firstName || chatId} สำเร็จ`
+      );
+      break;
+      
+    case "evening":
+      await bot.sendMessage(chatId, getEveningMessage());
+      botLog(
+        LOG_LEVELS.INFO,
+        "command-evening",
+        `ส่งข้อความตอนเย็นให้ ${username || firstName || chatId} สำเร็จ`
+      );
+      break;
+      
+    case "morning_full":
+      const morningFullMessage =
+        getMorningMessage() + "\n\n" + getCheckInReminderMessage();
+      await bot.sendMessage(chatId, morningFullMessage);
+      botLog(
+        LOG_LEVELS.INFO,
+        "command-morning_full",
+        `ส่งข้อความเต็มตอนเช้าให้ ${username || firstName || chatId} สำเร็จ`
+      );
+      break;
+      
+    case "evening_full":
+      const eveningFullMessage =
+        getEveningMessage() + "\n\n" + getCheckOutReminderMessage();
+      await bot.sendMessage(chatId, eveningFullMessage);
+      botLog(
+        LOG_LEVELS.INFO,
+        "command-evening_full",
+        `ส่งข้อความเต็มตอนเย็นให้ ${username || firstName || chatId} สำเร็จ`
+      );
+      break;
+      
+    case "add_holiday":
+      await handleAddHoliday(msg, match);
+      break;
+      
+    case "delete_holiday":
+      await handleDeleteHoliday(msg, match);
+      break;
+      
+    case "list_holidays":
+      await handleListHolidays(msg);
+      break;
+      
+    case "search_holiday":
+      await handleSearchHoliday(msg, match);
+      break;
+      
+    case "reload_holidays":
+      holidaysData = loadHolidays();
+      await bot.sendMessage(
+        chatId,
+        `✅ โหลดข้อมูลวันหยุดใหม่สำเร็จ\nมีวันหยุดทั้งหมด ${holidaysData.holidays.length} วัน`
+      );
+      botLog(
+        LOG_LEVELS.INFO,
+        "command-reload_holidays",
+        `แอดมิน ${chatId} โหลดข้อมูลวันหยุด ${holidaysData.holidays.length} รายการสำเร็จ`
+      );
+      break;
+      
+    case "import_holidays":
+      await handleImportHolidays(msg);
+      break;
+      
+    case "force_import_holidays":
+      await handleForceImportHolidays(msg);
+      break;
+      
+    case "dbstatus":
+      await handleDbStatus(msg);
+      break;
+      
+    case "start_test":
+      await handleStartTest(msg);
+      break;
+      
+    case "stop_test":
+      await handleStopTest(msg);
+      break;
+      
+    case "reset_webhook":
+      await handleResetWebhook(msg);
+      break;
+      
+    default:
+      await bot.sendMessage(chatId, "คำสั่งไม่ถูกต้องหรือยังไม่ได้กำหนด");
+  }
+}
+
+// ฟังก์ชันย่อยสำหรับแต่ละคำสั่ง
+async function handleServertime(msg) {
+  const chatId = msg.chat.id
+  const timeInfo = getServerTimeInfo()
+
+  // ตรวจสอบว่าวันนี้เป็นวันหยุดพิเศษหรือไม่
+  let holidayStatus = "ไม่ใช่วันหยุด"
+
+  // ตรวจสอบวันหยุดสุดสัปดาห์ก่อน
+  if (timeInfo.isWeekend) {
+    holidayStatus = "เป็นวันหยุดสุดสัปดาห์"
+  } else {
+    // ตรวจสอบวันหยุดพิเศษจากฐานข้อมูล
+    try {
+      const isSpecialHoliday = await isHoliday()
+      if (isSpecialHoliday) {
+        holidayStatus = "เป็นวันหยุดพิเศษ"
+      }
+    } catch (error) {
+      logError("handleServertime-holiday-check", error)
+      // ถ้าเกิดข้อผิดพลาดในการตรวจสอบวันหยุดพิเศษ ให้แสดงสถานะตามวันหยุดสุดสัปดาห์แทน
+      botLog(
+        LOG_LEVELS.WARN,
+        "handleServertime",
+        "เกิดข้อผิดพลาดในการตรวจสอบวันหยุดพิเศษ ใช้การตรวจสอบวันหยุดสุดสัปดาห์แทน"
+      )
+    }
+  }
 
   const serverTimeMessage = `
 ⏰ เวลาของเซิร์ฟเวอร์:
-- เวลา UTC: ${now.toISOString()}
-- เวลาของไทย: ${thaiTime.toISOString()}
-- Timezone offset: ${now.getTimezoneOffset() / -60} hours
-  `
 
-  bot
-    .sendMessage(msg.chat.id, serverTimeMessage)
-    .then(() => console.log("Server time message sent"))
-    .catch((err) => console.error("Error sending server time message:", err))
-})
+- เวลา UTC: ${timeInfo.utcTime}
+- เวลาของไทย: ${timeInfo.thaiTime}
+- Timezone offset: ${timeInfo.offset} ชั่วโมง ${timeInfo.offsetMinutes} นาที
+- สถานะวันหยุด: ${holidayStatus}
+`
 
-// ตรวจสอบสถานะบอท
-handlers.status = bot.onText(/^\/status$/, (msg) => {
-  bot
-    .sendMessage(
-      msg.chat.id,
-      "✅ บอทกำลังทำงานปกติ และพร้อมส่งข้อความแจ้งเตือนตามเวลาที่กำหนด!"
-    )
-    .then(() => console.log("Status message sent"))
-    .catch((err) => console.error("Error sending status message:", err))
-})
+  await bot.sendMessage(chatId, serverTimeMessage)
+  botLog(
+    LOG_LEVELS.INFO,
+    "command-servertime",
+    `ส่งข้อมูลเวลาเซิร์ฟเวอร์ให้ผู้ใช้ ${chatId} สำเร็จ`
+  )
+}
 
-// ทดสอบข้อความแจ้งเตือนลงเวลาเข้างาน
-handlers.checkin = bot.onText(/^\/checkin$/, (msg) => {
-  bot
-    .sendMessage(msg.chat.id, getCheckInReminderMessage())
-    .then(() => console.log("Check-in reminder sent"))
-    .catch((err) => console.error("Error sending check-in reminder:", err))
-})
+async function handleSubscribe(msg) {
+  const chatId = msg.chat.id;
+  const username = msg.from.username || "";
+  const firstName = msg.from.first_name || "";
+  const lastName = msg.from.last_name || "";
 
-// ทดสอบข้อความแจ้งเตือนลงเวลาออกจากงาน
-handlers.checkout = bot.onText(/^\/checkout$/, (msg) => {
-  bot
-    .sendMessage(msg.chat.id, getCheckOutReminderMessage())
-    .then(() => console.log("Check-out reminder sent"))
-    .catch((err) => console.error("Error sending check-out reminder:", err))
-})
+  // ตรวจสอบว่าผู้ใช้มีอยู่แล้วและสมัครรับการแจ้งเตือนอยู่หรือไม่
+  const userInfo = await getUserByChatId(chatId);
 
-// ทดสอบข้อความตอนเช้า
-handlers.morning = bot.onText(/^\/morning$/, (msg) => {
-  bot
-    .sendMessage(msg.chat.id, getMorningMessage())
-    .then(() => console.log("Morning message sent"))
-    .catch((err) => console.error("Error sending morning message:", err))
-})
-
-// ทดสอบข้อความตอนเย็น
-handlers.evening = bot.onText(/^\/evening$/, (msg) => {
-  bot
-    .sendMessage(msg.chat.id, getEveningMessage())
-    .then(() => console.log("Evening message sent"))
-    .catch((err) => console.error("Error sending evening message:", err))
-})
-
-// ทดสอบข้อความแจ้งเตือนตอนเช้าแบบเต็ม
-handlers.morningFull = bot.onText(/^\/morning_full$/, (msg) => {
-  const morningFullMessage =
-    getMorningMessage() + "\n\n" + getCheckInReminderMessage()
-  console.log("Sending test morning_full message")
-  bot
-    .sendMessage(msg.chat.id, morningFullMessage)
-    .then(() => console.log("Morning full message sent successfully"))
-    .catch((err) => console.error("Error sending morning full message:", err))
-})
-
-// ทดสอบข้อความแจ้งเตือนตอนเย็นแบบเต็ม
-handlers.eveningFull = bot.onText(/^\/evening_full$/, (msg) => {
-  const eveningFullMessage =
-    getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
-  console.log("Sending test evening_full message")
-  bot
-    .sendMessage(msg.chat.id, eveningFullMessage)
-    .then(() => console.log("Evening full message sent successfully"))
-    .catch((err) => console.error("Error sending evening full message:", err))
-})
-
-// เพิ่มคำสั่งแสดงรายการวันหยุดพิเศษทั้งหมด
-// เพิ่มคำสั่งแสดงรายการวันหยุดพิเศษทั้งหมด
-bot.onText(/^\/list_holidays$/, (msg) => {
-  const chatId = msg.chat.id
-
-  if (holidaysData.holidays.length === 0) {
-    bot.sendMessage(chatId, "ยังไม่มีวันหยุดพิเศษในระบบ")
-  } else {
-    // สร้างรายการวันหยุดพร้อมชื่อ
-    const holidayListItems = holidaysData.holidays.map((isoDate) => {
-      const thaiDate = isoDateToThaiDate(isoDate)
-      const holidayName = holidaysData.holidayDetails[isoDate] || "วันหยุดพิเศษ"
-      return `- ${thaiDate}  ${holidayName}`
-    })
-
-    const holidayList = holidayListItems.join("\n")
-    
-    // แปลงวันที่ปรับปรุงล่าสุดจาก ISO UTC+7 เป็นรูปแบบไทย
-    const lastUpdated = isoUTCToThaiDateTime(holidaysData.lastUpdated)
-
-    bot.sendMessage(
+  if (userInfo && userInfo.is_subscribed) {
+    // กรณีผู้ใช้สมัครอยู่แล้ว
+    await bot.sendMessage(
       chatId,
-      `📅 รายการวันหยุดพิเศษทั้งหมด (${holidaysData.holidays.length} วัน):\n\n${holidayList}\n\nปรับปรุงล่าสุด: ${lastUpdated}`
-    )
-  }
-})
-
-// เพิ่มคำสั่งโหลดข้อมูลวันหยุดจากไฟล์ใหม่ (สำหรับแอดมินเท่านั้น)
-bot.onText(/^\/reload_holidays$/, async (msg) => {
-  const chatId = msg.chat.id
-  const userId = msg.from.id
-
-  // ตรวจสอบว่าเป็นแอดมินหรือไม่
-  try {
-    const chatMember = await bot.getChatMember(chatId, userId)
-    const isGroupAdmin = ["creator", "administrator"].includes(
-      chatMember.status
-    )
-
-    if (isGroupAdmin) {
-      // โหลดข้อมูลวันหยุดใหม่
-      holidaysData = loadHolidays()
-      bot.sendMessage(
-        chatId,
-        `✅ โหลดข้อมูลวันหยุดใหม่สำเร็จ! มีวันหยุดทั้งหมด ${holidaysData.holidays.length} วัน`
-      )
-    } else {
-      bot.sendMessage(userId, "⚠️ คำสั่งนี้สำหรับแอดมินเท่านั้น")
-    }
-  } catch (error) {
-    console.error("Error checking admin status:", error)
-    bot.sendMessage(userId, "❌ เกิดข้อผิดพลาดในการตรวจสอบสิทธิ์")
-  }
-})
-
-// จัดการข้อความที่ไม่รู้จัก - ข้ามคำสั่งที่ขึ้นต้นด้วย /
-bot.on("message", (msg) => {
-  const chatId = msg.chat.id
-  const messageText = msg.text || ""
-  if (messageText && !messageText.startsWith("/")) {
-    bot
-      .sendMessage(
-        chatId,
-        `ขอบคุณสำหรับข้อความของคุณ! หากต้องการดูคำสั่งที่มี พิมพ์ /start`
-      )
-      .then(() => console.log("Default response sent"))
-      .catch((err) => console.error("Error sending default response:", err))
-  }
-})
-
-// จัดการกับข้อผิดพลาด
-bot.on("polling_error", (error) => {
-  console.error("Polling error:", error)
-})
-
-// ปรับปรุง HTTP server สำหรับ Render และใช้ Keep-Alive
-const server = http.createServer((req, res) => {
-  // บันทึกรายละเอียดคำขอทั้งหมด
-  console.log(
-    `Received HTTP request: ${req.method} ${req.url} from ${
-      req.headers["user-agent"] || "Unknown"
-    }`
-  )
-
-  // ทดสอบบอทเมื่อมีการเรียกใช้ HTTP server
-  try {
-    bot
-      .getMe()
-      .then((botInfo) => {
-        console.log(`Bot is working: ${botInfo.username}`)
-      })
-      .catch((error) => {
-        console.error("Bot test failed:", error)
-        // พยายามรีสตาร์ทบอท
-        try {
-          console.log("Attempting to restart bot polling...")
-          bot.stopPolling()
-          setTimeout(() => {
-            bot.startPolling()
-            console.log("Bot polling restarted successfully")
-          }, 2000)
-        } catch (e) {
-          console.error("Failed to restart bot polling:", e)
-        }
-      })
-  } catch (e) {
-    console.error("Error in bot test:", e)
+      "ℹ️ คุณมีข้อมูลสมัครรับการแจ้งเตือนในระบบแล้ว ระบบจะส่งข้อความแจ้งเตือนตามเวลาที่กำหนด"
+    );
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-subscribe",
+      `ผู้ใช้ ${
+        username || firstName || chatId
+      } สมัครรับการแจ้งเตือนในระบบแล้ว`
+    );
+    return;
   }
 
-  res.writeHead(200, { "Content-Type": "text/plain" })
-  const now = new Date()
-  const thaiTime = new Date(now.getTime() + 7 * 60 * 60 * 1000)
-  res.end(
-    `Bot is active! Server time: ${now.toISOString()}\nThai time: ${thaiTime.toISOString()}\n`
-  )
-})
+  // สมัครหรืออัปเดตการสมัคร
+  await updateUserSubscription(
+    {
+      chatId: chatId,
+      username: username,
+      firstName: firstName,
+      lastName: lastName,
+    },
+    true
+  );
 
-const PORT = process.env.PORT || 3000
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`)
-})
-
-// ฟังก์ชัน Keep-Alive สำหรับป้องกันการ "หลับ" บน Render
-function keepAlive() {
-  const now = new Date()
-  console.log("Pinging self to stay awake - " + now.toISOString())
-
-  // ทดสอบบอท
-  try {
-    bot
-      .getMe()
-      .then((botInfo) => {
-        console.log(`Bot check OK: ${botInfo.username} at ${now.toISOString()}`)
-      })
-      .catch((error) => {
-        console.error("Bot check failed:", error)
-        try {
-          bot.stopPolling()
-          setTimeout(() => {
-            bot.startPolling()
-            console.log("Bot polling restarted after failure")
-          }, 2000)
-        } catch (e) {
-          console.error("Failed to restart bot:", e)
-        }
-      })
-  } catch (e) {
-    console.error("Error in bot check:", e)
-  }
-
-  // Ping ตัวเอง
-  try {
-    http
-      .get(appUrl, (res) => {
-        console.log(`Ping status: ${res.statusCode}`)
-      })
-      .on("error", (err) => {
-        console.error(`Ping failed: ${err.message}`)
-      })
-  } catch (err) {
-    console.error("Error in keepAlive function:", err)
+  // กรณีเป็นผู้ใช้ใหม่หรือผู้ใช้ที่เคยยกเลิกแล้วกลับมาสมัครใหม่
+  if (!userInfo) {
+    await bot.sendMessage(
+      chatId,
+      "✅ คุณสมัครรับการแจ้งเตือนเรียบร้อยแล้ว! เราจะส่งข้อความแจ้งเตือนตามเวลาที่กำหนด"
+    );
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-subscribe",
+      `ผู้ใช้ใหม่ ${
+        username || firstName || chatId
+      } สมัครรับการแจ้งเตือนสำเร็จ`
+    );
+  } else {
+    await bot.sendMessage(
+      chatId,
+      "✅ คุณได้เปิดรับการแจ้งเตือนอีกครั้ง! เราจะส่งข้อความแจ้งเตือนตามเวลาที่กำหนด"
+    );
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-subscribe",
+      `ผู้ใช้เก่า ${
+        username || firstName || chatId
+      } กลับมาสมัครรับการแจ้งเตือนอีกครั้ง`
+    );
   }
 }
 
-// ลดเวลา ping เหลือ 3 นาที
-const pingInterval = setInterval(keepAlive, 3 * 60 * 1000)
+async function handleUnsubscribe(msg) {
+  const chatId = msg.chat.id;
+  const username = msg.from.username || "";
+  const firstName = msg.from.first_name || "";
 
-// เพิ่มการจัดการข้อผิดพลาด
-process.on("uncaughtException", (err) => {
-  console.error("Uncaught Exception:", err)
-  // ไม่ควรจบการทำงานของบอท
+  // แก้ไขโดยใช้ updateUserSubscription แทนการ DELETE
+  const success = await updateUserSubscription(
+    {
+      chatId: chatId,
+      username: msg.from.username || "",
+      firstName: msg.from.first_name || "",
+      lastName: msg.from.last_name || "",
+    },
+    false // ตั้งค่า is_subscribed เป็น false แทนการลบทิ้ง
+  );
+
+  if (success) {
+    await bot.sendMessage(
+      chatId,
+      "✅ คุณยกเลิกรับการแจ้งเตือนเรียบร้อยแล้ว!"
+    );
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-unsubscribe",
+      `ผู้ใช้ ${
+        username || firstName || chatId
+      } ยกเลิกรับการแจ้งเตือนสำเร็จ`
+    );
+  } else {
+    await bot.sendMessage(
+      chatId,
+      "⚠️ ไม่สามารถยกเลิกรับการแจ้งเตือนได้ โปรดลองอีกครั้ง"
+    );
+    botLog(
+      LOG_LEVELS.WARN,
+      "command-unsubscribe",
+      `ไม่สามารถยกเลิกรับการแจ้งเตือนของผู้ใช้ ${
+        username || firstName || chatId
+      } ได้`
+    );
+  }
+}
+
+async function handleMyInfo(msg) {
+  const chatId = msg.chat.id;
+  const username = msg.from.username || "";
+  const firstName = msg.from.first_name || "";
+
+  const userInfo = await getUserByChatId(chatId);
+  if (userInfo) {
+    const statusText = userInfo.is_subscribed
+      ? "✅ สมัครรับข้อความแจ้งเตือน"
+      : "❌ ไม่ได้สมัครรับข้อความแจ้งเตือน";
+
+    let registrationDate = userInfo.date_added || "ไม่ระบุ";
+    if (registrationDate !== "ไม่ระบุ") {
+      const date = dayjs(userInfo.date_added).tz(THAI_TIMEZONE);
+      registrationDate = date.format(
+        `DD/MM/${date.year() + 543} - HH:mm น.`
+      );
+    }
+
+    const fullName =
+      [userInfo.first_name, userInfo.last_name]
+        .filter(Boolean)
+        .join(" ") || "ไม่ระบุ";
+    const message = `
+📋 *ข้อมูลของคุณในระบบ*:
+
+- *ชื่อ-สกุล*: ${fullName}
+- *Username*: ${userInfo.username ? "@" + userInfo.username : "ไม่ได้ตั้งค่า"}
+- *วันที่ลงทะเบียน*: ${registrationDate}
+- *สถานะการรับข้อความ*: ${statusText}
+
+${
+  userInfo.is_subscribed
+    ? "🚫 หากต้องการยกเลิกรับการแจ้งเตือน คลิก /unsubscribe"
+    : "📝 หากต้องการสมัครรับการแจ้งเตือน คลิก /subscribe"
+}
+        `;
+    await bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-myinfo",
+      `ส่งข้อมูลผู้ใช้ให้ ${username || firstName || chatId} สำเร็จ`
+    );
+  } else {
+    await bot.sendMessage(
+      chatId,
+      "ไม่พบข้อมูลของคุณในระบบ หากต้องการสมัคร คลิก /subscribe เพื่อลงทะเบียน"
+    );
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-myinfo",
+      `ไม่พบข้อมูลผู้ใช้ ${username || firstName || chatId} ในระบบ`
+    );
+  }
+}
+
+async function handleListHolidays(msg) {
+  const chatId = msg.chat.id;
+  const username = msg.from.username || "";
+  const firstName = msg.from.first_name || "";
+
+  const holidays = await getAllHolidays();
+  if (holidays.length === 0) {
+    await bot.sendMessage(chatId, "ไม่มีวันหยุดพิเศษที่กำหนดไว้");
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-list_holidays",
+      `ไม่พบข้อมูลวันหยุดในระบบ`
+    );
+    return;
+  }
+
+  let holidayList = "📅 รายการวันหยุดพิเศษ:\n\n";
+  holidays.forEach((holiday) => {
+    const date = dayjs(holiday.holiday_date);
+    const thaiDate = date.format(`DD/MM/${date.year() + 543}`); // แสดงในรูปแบบไทย
+    holidayList += `${thaiDate} - ${holiday.holiday_name}\n`;
+  });
+
+  await bot.sendMessage(chatId, holidayList);
+  botLog(
+    LOG_LEVELS.INFO,
+    "command-list_holidays",
+    `ส่งรายการวันหยุด ${holidays.length} รายการให้ผู้ใช้ ${
+      username || firstName || chatId
+    } สำเร็จ`
+  );
+}
+
+async function handleSearchHoliday(msg, match) {
+  const chatId = msg.chat.id;
+  const keyword = match[1];
+  const username = msg.from.username || "";
+  const firstName = msg.from.first_name || "";
+
+  const holidays = await searchHolidays(keyword);
+  if (holidays.length === 0) {
+    await bot.sendMessage(chatId, `ไม่พบวันหยุดที่มีคำว่า "${keyword}"`);
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-search_holiday",
+      `ไม่พบวันหยุดที่มีคำว่า "${keyword}"`
+    );
+    return;
+  }
+
+  let resultList = `🔍 ผลการค้นหาวันหยุด "${keyword}":\n\n`;
+  holidays.forEach((holiday) => {
+    const date = dayjs(holiday.holiday_date);
+    const thaiDate = date.format(`DD/MM/${date.year() + 543}`);
+    resultList += `${thaiDate} - ${holiday.holiday_name}\n`;
+  });
+
+  await bot.sendMessage(chatId, resultList);
+  botLog(
+    LOG_LEVELS.INFO,
+    "command-search_holiday",
+    `ส่งผลการค้นหาวันหยุด ${holidays.length} รายการให้ผู้ใช้ ${
+      username || firstName || chatId
+    } สำเร็จ`
+  );
+}
+
+async function handleAddHoliday(msg, match) {
+  const chatId = msg.chat.id;
+  const thaiDate = match[1];
+  const description = match[2] || "วันหยุดพิเศษ";
+
+  // แปลงวันที่จากรูปแบบไทยเป็น ISO
+  const isoDate = thaiDateToIsoDate(thaiDate);
+  if (!isoDate) {
+    await bot.sendMessage(
+      chatId,
+      "❌ รูปแบบวันที่ไม่ถูกต้อง กรุณาใช้รูปแบบ วัน/เดือน/ปี(พ.ศ.) เช่น 01/01/2568"
+    );
+    botLog(
+      LOG_LEVELS.WARN,
+      "command-add_holiday",
+      `แอดมิน ${chatId} ใส่รูปแบบวันที่ไม่ถูกต้อง: ${thaiDate}`
+    );
+    return;
+  }
+
+  const success = await addHoliday(isoDate, description);
+  if (success) {
+    await bot.sendMessage(
+      chatId,
+      `✅ เพิ่มวันหยุด ${thaiDate} (${description}) เรียบร้อยแล้ว`
+    );
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-add_holiday",
+      `แอดมิน ${chatId} เพิ่มวันหยุด ${thaiDate} (${description}) สำเร็จ`
+    );
+  } else {
+    await bot.sendMessage(chatId, "❌ เกิดข้อผิดพลาดในการบันทึกวันหยุด");
+    botLog(
+      LOG_LEVELS.ERROR,
+      "command-add_holiday",
+      `แอดมิน ${chatId} ไม่สามารถเพิ่มวันหยุด ${thaiDate} (${description}) ได้`
+    );
+  }
+}
+
+async function handleDeleteHoliday(msg, match) {
+  const chatId = msg.chat.id;
+  const thaiDate = match[1];
+
+  // แปลงวันที่จากรูปแบบไทยเป็น ISO
+  const isoDate = thaiDateToIsoDate(thaiDate);
+  if (!isoDate) {
+    await bot.sendMessage(
+      chatId,
+      "❌ รูปแบบวันที่ไม่ถูกต้อง กรุณาใช้รูปแบบ วัน/เดือน/ปี(พ.ศ.) เช่น 01/01/2568"
+    );
+    botLog(
+      LOG_LEVELS.WARN,
+      "command-delete_holiday",
+      `แอดมิน ${chatId} ใส่รูปแบบวันที่ไม่ถูกต้อง: ${thaiDate}`
+    );
+    return;
+  }
+
+  const success = await deleteHoliday(isoDate);
+  if (success) {
+    await bot.sendMessage(
+      chatId,
+      `✅ ลบวันหยุด ${thaiDate} เรียบร้อยแล้ว`
+    );
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-delete_holiday",
+      `แอดมิน ${chatId} ลบวันหยุด ${thaiDate} สำเร็จ`
+    );
+  } else {
+    await bot.sendMessage(
+      chatId,
+      `❌ ไม่พบวันหยุด ${thaiDate} หรือเกิดข้อผิดพลาดในการลบ`
+    );
+    botLog(
+      LOG_LEVELS.WARN,
+      "command-delete_holiday",
+      `แอดมิน ${chatId} ไม่สามารถลบวันหยุด ${thaiDate} ได้`
+    );
+  }
+}
+
+async function handleImportHolidays(msg) {
+  const chatId = msg.chat.id;
+
+  const result = await importHolidaysFromJson();
+  if (result) {
+    await bot.sendMessage(
+      chatId,
+      "✅ นำเข้าข้อมูลวันหยุดจาก JSON เรียบร้อยแล้ว"
+    );
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-import_holidays",
+      `แอดมิน ${chatId} นำเข้าข้อมูลวันหยุดจาก JSON สำเร็จ`
+    );
+  } else {
+    await bot.sendMessage(
+      chatId,
+      "ℹ️ มีข้อมูลในฐานข้อมูลแล้ว ข้ามการนำเข้า หากต้องการนำเข้าซ้ำ กรุณาใช้คำสั่ง /force_import_holidays"
+    );
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-import_holidays",
+      `มีข้อมูลในฐานข้อมูลแล้ว ข้ามการนำเข้า`
+    );
+  }
+}
+
+async function handleForceImportHolidays(msg) {
+  const chatId = msg.chat.id;
+
+  try {
+    let conn = await getConnection();
+    // ลบข้อมูลวันหยุดทั้งหมด
+    await conn.query("TRUNCATE TABLE holidays");
+    await conn.end();
+
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-force_import_holidays",
+      `ลบข้อมูลวันหยุดเดิมทั้งหมดสำเร็จ`
+    );
+
+    // นำเข้าข้อมูลใหม่
+    const result = await importHolidaysFromJson();
+    if (result) {
+      await bot.sendMessage(
+        chatId,
+        "✅ บังคับนำเข้าข้อมูลวันหยุดจาก JSON เรียบร้อยแล้ว"
+      );
+      botLog(
+        LOG_LEVELS.INFO,
+        "command-force_import_holidays",
+        `แอดมิน ${chatId} บังคับนำเข้าข้อมูลวันหยุดจาก JSON สำเร็จ`
+      );
+    } else {
+      await bot.sendMessage(
+        chatId,
+        "❌ ไม่สามารถนำเข้าข้อมูลวันหยุดได้"
+      );
+      botLog(
+        LOG_LEVELS.ERROR,
+        "command-force_import_holidays",
+        `แอดมิน ${chatId} ไม่สามารถนำเข้าข้อมูลวันหยุดได้`
+      );
+    }
+  } catch (dbError) {
+    logError("command-force_import_holidays-db", dbError);
+    await bot.sendMessage(
+      chatId,
+      "❌ เกิดข้อผิดพลาดในการทำงานกับฐานข้อมูล: " + dbError.message
+    );
+  }
+}
+
+async function handleDbStatus(msg) {
+  const chatId = msg.chat.id;
+
+  const subscribers = await getSubscribedUsers();
+  const conn = await getConnection();
+
+  // ดึงจำนวนผู้ใช้ทั้งหมด
+  const [totalUsers] = await conn.query(
+    "SELECT COUNT(*) as count FROM users"
+  );
+  await conn.end();
+
+  const message = `
+📊 สถานะฐานข้อมูล:
+
+- จำนวนผู้ใช้ทั้งหมด: ${totalUsers[0].count} คน
+- จำนวนผู้สมัครรับข้อความ: ${subscribers.length} คน
+      `;
+
+  await bot.sendMessage(chatId, message);
+  botLog(
+    LOG_LEVELS.INFO,
+    "command-dbstatus",
+    `ส่งข้อมูลสถานะฐานข้อมูลให้แอดมิน ${chatId} สำเร็จ`
+  );
+}
+
+async function handleStartTest(msg) {
+  const chatId = msg.chat.id;
+
+  if (isTestCronRunning) {
+    await bot.sendMessage(chatId, "⚠️ การทดสอบกำลังทำงานอยู่แล้ว!");
+    botLog(
+      LOG_LEVELS.WARN,
+      "command-start_test",
+      `การทดสอบกำลังทำงานอยู่แล้ว`
+    );
+    return;
+  }
+
+  if (testCron) {
+    testCron.start();
+    isTestCronRunning = true;
+    await bot.sendMessage(
+      chatId,
+      "✅ เริ่มการทดสอบแล้ว! แจ้งเตือนทุก 2 นาที"
+    );
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-start_test",
+      `แอดมิน ${chatId} เริ่มการทดสอบส่งข้อความทุก 2 นาทีสำเร็จ`
+    );
+  } else {
+    await bot.sendMessage(chatId, "❌ ไม่สามารถเริ่มการทดสอบได้ ไม่พบ cron job");
+    botLog(
+      LOG_LEVELS.ERROR,
+      "command-start_test",
+      `ไม่สามารถเริ่ม testCron เนื่องจากไม่มีการสร้าง`
+    );
+  }
+}
+
+async function handleStopTest(msg) {
+  const chatId = msg.chat.id;
+
+  if (!isTestCronRunning || !testCron) {
+    await bot.sendMessage(chatId, "⚠️ ไม่มีการทดสอบที่กำลังทำงานอยู่!");
+    botLog(
+      LOG_LEVELS.WARN,
+      "command-stop_test",
+      `ไม่มีการทดสอบที่กำลังทำงานอยู่`
+    );
+    return;
+  }
+
+  testCron.stop();
+  isTestCronRunning = false;
+  await bot.sendMessage(chatId, "✅ หยุดการทดสอบเรียบร้อยแล้ว!");
+  botLog(
+    LOG_LEVELS.INFO,
+    "command-stop_test",
+    `แอดมิน ${chatId} หยุดการทดสอบสำเร็จ`
+  );
+}
+
+async function handleResetWebhook(msg) {
+  const chatId = msg.chat.id;
+
+  await bot.deleteWebHook();
+  botLog(
+    LOG_LEVELS.INFO,
+    "command-reset_webhook",
+    `ลบ webhook เดิมสำเร็จ`
+  );
+
+  const result = await bot.setWebHook(`${appUrl}/bot${token}`);
+  botLog(
+    LOG_LEVELS.INFO,
+    "command-reset_webhook",
+    `ตั้งค่า webhook ใหม่: ${appUrl}/bot${token} ผลลัพธ์: ${result}`
+  );
+
+  await bot.sendMessage(
+    chatId,
+    `✅ รีเซ็ต webhook สำเร็จ\nWebhook URL: ${appUrl}/bot${token}`
+  );
+}
+
+// เพิ่มเส้นทางสำหรับทดสอบส่งข้อความ
+app.get("/test-message/:chatId", async (req, res) => {
+  try {
+    const chatId = req.params.chatId
+    console.log(`Sending test message to chat ID: ${chatId}`)
+    const result = await bot.sendMessage(chatId, "นี่คือข้อความทดสอบจากบอท! 🤖")
+    console.log("Message sent result:", result)
+    res.send("Test message sent successfully")
+  } catch (error) {
+    console.error("Error sending test message:", error)
+    res.status(500).send(`Error: ${error.message}`)
+  }
 })
 
-process.on("unhandledRejection", (reason, promise) => {
-  console.error("Unhandled Rejection at:", promise, "reason:", reason)
-  // ไม่ควรจบการทำงานของบอท
-})
+// คำสั่งเริ่มการทดสอบ (สำหรับแอดมิน)
+function startTest(msg) {
+  try {
+    const chatId = msg.chat.id
 
-// จัดการการปิดโปรแกรมอย่างถูกต้อง
-process.on("SIGINT", () => {
-  console.log("Shutting down bot gracefully...")
+    // ตรวจสอบสิทธิ์แอดมิน
+    if (!isAdmin(chatId)) {
+      bot.sendMessage(chatId, "❌ เฉพาะแอดมินเท่านั้นที่ใช้คำสั่งนี้ได้!")
+      botLog(
+        LOG_LEVELS.WARN,
+        "command-start_test",
+        `ผู้ใช้ที่ไม่ใช่แอดมิน ${chatId} พยายามเรียกใช้คำสั่ง /start_test`
+      )
+      return
+    }
 
-  // หยุดทุก cron jobs
-  morningReminder.stop()
-  morningMessage.stop()
-  eveningReminder.stop()
-  eveningMessage.stop()
-  testCron.stop()
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-start_test",
+      `แอดมิน ${chatId} เรียกใช้คำสั่ง /start_test`
+    )
 
-  // หยุด ping interval
-  clearInterval(pingInterval)
+    if (isTestCronRunning) {
+      bot.sendMessage(chatId, "⚠️ การทดสอบกำลังทำงานอยู่แล้ว!")
+      botLog(
+        LOG_LEVELS.WARN,
+        "command-start_test",
+        `การทดสอบกำลังทำงานอยู่แล้ว`
+      )
+      return
+    }
 
-  // หยุด bot polling
-  bot.stopPolling()
+    if (testCron) {
+      testCron.start()
+      isTestCronRunning = true
+      bot.sendMessage(chatId, "✅ เริ่มการทดสอบแล้ว! แจ้งเตือนทุก 2 นาที")
+      botLog(
+        LOG_LEVELS.INFO,
+        "command-start_test",
+        `แอดมิน ${chatId} เริ่มการทดสอบส่งข้อความทุก 2 นาทีสำเร็จ`
+      )
+    } else {
+      bot.sendMessage(chatId, "❌ ไม่สามารถเริ่มการทดสอบได้ ไม่พบ cron job")
+      botLog(
+        LOG_LEVELS.ERROR,
+        "command-start_test",
+        `ไม่สามารถเริ่ม testCron เนื่องจากไม่มีการสร้าง`
+      )
+    }
+  } catch (error) {
+    logError("command-start_test", error)
+    try {
+      bot.sendMessage(msg.chat.id, "❌ เกิดข้อผิดพลาดในการเริ่มการทดสอบ")
+    } catch (sendError) {
+      logError("command-start_test-sendError", sendError)
+    }
+  }
+}
 
-  // ปิด server
-  server.close()
+// คำสั่งหยุดการทดสอบ (สำหรับแอดมิน)
+function stopTest(msg) {
+  try {
+    const chatId = msg.chat.id
 
-  console.log("Shutdown complete")
-  process.exit(0)
-})
+    // ตรวจสอบสิทธิ์แอดมิน
+    if (!isAdmin(chatId)) {
+      bot.sendMessage(chatId, "❌ เฉพาะแอดมินเท่านั้นที่ใช้คำสั่งนี้ได้!")
+      botLog(
+        LOG_LEVELS.WARN,
+        "command-stop_test",
+        `ผู้ใช้ที่ไม่ใช่แอดมิน ${chatId} พยายามเรียกใช้คำสั่ง /stop_test`
+      )
+      return
+    }
 
-// แจ้งเตือนเมื่อบอทเริ่มทำงานสมบูรณ์
-console.log("Bot setup complete, waiting for messages...")
-console.log("Bot is ready to send reminders!")
-console.log("Bot is running in production mode")
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-stop_test",
+      `แอดมิน ${chatId} เรียกใช้คำสั่ง /stop_test`
+    )
+
+    if (!isTestCronRunning || !testCron) {
+      bot.sendMessage(chatId, "⚠️ ไม่มีการทดสอบที่กำลังทำงานอยู่!")
+      botLog(
+        LOG_LEVELS.WARN,
+        "command-stop_test",
+        `ไม่มีการทดสอบที่กำลังทำงานอยู่`
+      )
+      return
+    }
+
+    testCron.stop()
+    isTestCronRunning = false
+    bot.sendMessage(chatId, "✅ หยุดการทดสอบเรียบร้อยแล้ว!")
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-stop_test",
+      `แอดมิน ${chatId} หยุดการทดสอบสำเร็จ`
+    )
+  } catch (error) {
+    logError("command-stop_test", error)
+    try {
+      bot.sendMessage(msg.chat.id, "❌ เกิดข้อผิดพลาดในการหยุดการทดสอบ")
+    } catch (sendError) {
+      logError("command-stop_test-sendError", sendError)
+    }
+  }
+}
+
+// เรียกใช้แอปพลิเคชันครั้งแรก (และครั้งเดียว) หลังจากโหลดไฟล์เสร็จ
+if (!hasStarted) {
+  startApplication()
+}
