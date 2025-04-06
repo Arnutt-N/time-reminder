@@ -91,3 +91,6 @@ package-lock.json
 holidays.json
 index copy*.js
 index copy *.js
+* copy*.js
+* copy
+* copy *

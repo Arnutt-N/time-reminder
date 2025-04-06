@@ -15,20 +15,20 @@ RUN npm install
 # คัดลอกโค้ดของแอปพลิเคชัน
 COPY . .
 
-# ตั้งค่า port ที่ใช้งาน
-ENV PORT=3000
+# ตั้งค่า environment variables (ไม่กำหนด PORT ตายตัว)
 ENV NODE_ENV=production
 
-# เปิด port
-EXPOSE 3000
+# เปิด port โดยใช้ตัวแปร PORT จาก environment
+EXPOSE ${PORT:-3000}  
+# Default to 3000 if PORT isn’t set (e.g., locally)
 
 # ตั้งค่าพื้นที่เก็บข้อมูลสำหรับวันหยุด
 RUN mkdir -p /app/data
-VOLUME [ "/app/data" ]
+VOLUME ["/app/data"]
 
-# สร้าง healthcheck เพื่อตรวจสอบว่าแอปทำงานอยู่
+# สร้าง healthcheck โดยใช้ PORT จาก environment
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:${PORT} || exit 1
+    CMD curl -f http://localhost:${PORT:-3000} || exit 1
 
 # รันแอปพลิเคชัน
 CMD ["node", "index.js"]
