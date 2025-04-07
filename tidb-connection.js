@@ -21,6 +21,10 @@ const THAI_TIMEZONE = "Asia/Bangkok"
 
 dotenv.config()
 
+// กำหนดค่าสภาพแวดล้อม
+const ENV = process.env.NODE_ENV || 'development';
+const DB_NAME = process.env.TIDB_DATABASE || (ENV === 'production' ? 'telegram_bot' : 'test');
+
 // เพิ่มตัวแปรสถานะเพื่อติดตามว่าฐานข้อมูลได้รับการเริ่มต้นแล้วหรือไม่
 let databaseInitialized = false
 let initializationInProgress = false
@@ -115,7 +119,7 @@ async function initializeDatabase() {
     botLog(
       LOG_LEVELS.INFO,
       "initializeDatabase",
-      "กำลังอยู่ในขั้นตอนการเริ่มต้นฐานข้อมูล กรุณารอสักครู่"
+      `กำลังเริ่มต้นการเชื่อมต่อฐานข้อมูล ${DB_NAME} ในโหมด ${ENV} (PID: ${process.pid})`
     )
 
     // รอให้การเริ่มต้นเสร็จสิ้น (ไม่เกิน 30 วินาที)
@@ -172,20 +176,58 @@ async function initializeDatabase() {
           "initializeDatabase",
           "เชื่อมต่อสำเร็จ กำลังสร้างฐานข้อมูล"
         )
-        await conn.query(`CREATE DATABASE IF NOT EXISTS \`telegram_bot\`;`)
-        await conn.query(`USE \`telegram_bot\`;`)
+        // สร้างฐานข้อมูลและเลือกใช้งาน
+        await conn.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\`;`)
+        await conn.query(`USE \`${DB_NAME}\`;`)
 
         // สร้างตาราง users
         await conn.query(`
           CREATE TABLE IF NOT EXISTS users (
-            chat_id VARCHAR(50) PRIMARY KEY,
-            username VARCHAR(100),
-            first_name VARCHAR(100),
-            last_name VARCHAR(100),
-            date_added DATETIME DEFAULT CURRENT_TIMESTAMP,
-            is_subscribed BOOLEAN DEFAULT TRUE
-          );
-        `)
+        chat_id VARCHAR(50) PRIMARY KEY,
+        username VARCHAR(100),
+        first_name VARCHAR(100),
+        last_name VARCHAR(100),
+        date_added DATETIME DEFAULT CURRENT_TIMESTAMP,
+        is_subscribed BOOLEAN DEFAULT TRUE,
+        role VARCHAR(20) NOT NULL DEFAULT 'user'
+      )
+    `)
+        await conn.query(`
+      CREATE INDEX IF NOT EXISTS idx_user_role ON users(role)
+    `)
+
+        // ตรวจสอบว่ามีแอดมินอยู่แล้วหรือไม่
+        const [adminCheck] = await conn.query(`
+      SELECT COUNT(*) as count FROM users WHERE role = 'admin'
+    `)
+
+        // ถ้ายังไม่มีแอดมิน ให้กำหนดแอดมินจาก ADMIN_CHAT_ID ใน .env
+        if (adminCheck[0].count === 0 && process.env.ADMIN_CHAT_ID) {
+          await connection.query(
+            `
+        UPDATE users SET role = 'admin' WHERE chat_id = ?
+      `,
+            [process.env.ADMIN_CHAT_ID]
+          )
+
+          // หากไม่พบผู้ใช้ที่มี chat_id ตรงกับ ADMIN_CHAT_ID ให้สร้างใหม่
+          const [userCheck] = await connection.query(
+            `
+        SELECT COUNT(*) as count FROM users WHERE chat_id = ?
+      `,
+            [process.env.ADMIN_CHAT_ID]
+          )
+
+          if (userCheck[0].count === 0) {
+            await connection.query(
+              `
+          INSERT INTO users (chat_id, username, first_name, last_name, role)
+          VALUES (?, 'admin', 'Admin', 'User', 'admin')
+        `,
+              [process.env.ADMIN_CHAT_ID]
+            )
+          }
+        }
 
         // สร้างตาราง holidays
         await conn.query(`
@@ -201,7 +243,7 @@ async function initializeDatabase() {
         if (!connectionPool) {
           const poolOptions = {
             ...rootOptions,
-            database: "telegram_bot",
+            database: DB_NAME,
             connectionLimit: 20,
             waitForConnections: true,
             queueLimit: 0,
@@ -211,7 +253,7 @@ async function initializeDatabase() {
           botLog(
             LOG_LEVELS.INFO,
             "initializeDatabase",
-            "สร้าง connection pool สำเร็จ"
+            `สร้าง connection pool สำหรับ ${DB_NAME} สำเร็จ`
           )
         }
 
@@ -545,14 +587,57 @@ async function addHoliday(date, name) {
   let conn
   try {
     conn = await getConnection()
+
+    // ตรวจสอบและแปลงวันที่ให้เป็นรูปแบบ SQL DATE (YYYY-MM-DD)
+    let formattedDate
+    if (typeof date === "string") {
+      // ถ้าเป็น string พยายามแปลงเป็นรูปแบบ YYYY-MM-DD
+      // ตรวจสอบว่าเป็นรูปแบบ dd/mm/yyyy (รูปแบบไทย)
+      if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(date)) {
+        const parts = date.split("/")
+        const day = parts[0].padStart(2, "0")
+        const month = parts[1].padStart(2, "0")
+        const year = parseInt(parts[2]) - 543 // แปลงพ.ศ. เป็น ค.ศ.
+        formattedDate = `${year}-${month}-${day}`
+      }
+      // ตรวจสอบว่าเป็นรูปแบบ YYYY-MM-DD อยู่แล้ว
+      else if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        formattedDate = date
+      }
+      // รูปแบบอื่นๆ ให้ใช้ dayjs แปลง
+      else {
+        const dateObj = dayjs(date)
+        if (!dateObj.isValid()) {
+          botLog(
+            LOG_LEVELS.ERROR,
+            "addHoliday",
+            `รูปแบบวันที่ไม่ถูกต้อง: ${date}`
+          )
+          return false
+        }
+        formattedDate = dateObj.format("YYYY-MM-DD")
+      }
+    } else if (date instanceof Date) {
+      // ถ้าเป็น Date object
+      formattedDate = dayjs(date).format("YYYY-MM-DD")
+    } else {
+      botLog(
+        LOG_LEVELS.ERROR,
+        "addHoliday",
+        `ชนิดข้อมูลวันที่ไม่ถูกต้อง: ${typeof date}`
+      )
+      return false
+    }
+
     await conn.query(
       "INSERT INTO holidays (holiday_date, holiday_name) VALUES (?, ?) ON DUPLICATE KEY UPDATE holiday_name = ?",
-      [date, name, name]
+      [formattedDate, name, name]
     )
+
     botLog(
       LOG_LEVELS.INFO,
       "addHoliday",
-      `เพิ่มวันหยุด ${date} (${name}) สำเร็จ`
+      `เพิ่มวันหยุด ${formattedDate} (${name}) สำเร็จ`
     )
     return true
   } catch (error) {

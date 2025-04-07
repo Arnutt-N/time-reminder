@@ -4,8 +4,8 @@
     "description": "Telegram bot สำหรับส่งข้อความแจ้งเตือนตามเวลาที่กำหนด",
     "main": "index.js",
     "scripts": {
-        "start": "node index.js",
-        "dev": "nodemon index.js"
+        "start": "NODE_ENV=production node index.js",
+        "dev": "NODE_ENV=development node-dev index.js"
     },
     "dependencies": {
         "dayjs": "^1.11.13",
@@ -17,6 +17,7 @@
         "winston": "^3.17.0"
     },
     "devDependencies": {
+        "node-dev": "^8.0.0",
         "nodemon": "^3.1.9"
     },
     "engines": {

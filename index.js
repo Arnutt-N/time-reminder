@@ -545,8 +545,8 @@ async function isHoliday() {
 
 // แยกฟังก์ชันตรวจสอบวันหยุดสุดสัปดาห์
 function isWeekend(date) {
-  const day = date.day(); // 0 = อาทิตย์, 1 = จันทร์, ..., 6 = เสาร์
-  return day === 0 || day === 6;
+  const day = date.day() // 0 = อาทิตย์, 1 = จันทร์, ..., 6 = เสาร์
+  return day === 0 || day === 6
 }
 
 // ฟังก์ชันข้อความแจ้งเตือน
@@ -1080,11 +1080,23 @@ Timezone offset: ${offsetHours} hours ${offsetMinutes} mins
   }
 }
 
-// เพิ่มฟังก์ชันใน index.js
-function isAdmin(chatId) {
-  return String(chatId) === process.env.ADMIN_CHAT_ID
-}
+// ฟังก์ชันตรวจสอบแอดมินจากฐานข้อมูล
+async function isAdmin(chatId) {
+  try {
+    // ตรวจสอบจากค่า ADMIN_CHAT_ID ในไฟล์ .env ก่อน (สำหรับกรณีฉุกเฉิน)
+    if (String(chatId) === process.env.ADMIN_CHAT_ID) {
+      return true
+    }
 
+    // ตรวจสอบจากฐานข้อมูล
+    const userInfo = await getUserByChatId(chatId)
+    return userInfo && userInfo.role === "admin"
+  } catch (error) {
+    logError("isAdmin", error)
+    // กรณีเกิดข้อผิดพลาดในการเชื่อมต่อฐานข้อมูล ให้ใช้ค่าจาก .env แทน
+    return String(chatId) === process.env.ADMIN_CHAT_ID
+  }
+}
 
 // การจัดการ handlers ของบอท
 // กำหนดคำสั่งและสิทธิ์
@@ -1117,15 +1129,22 @@ const COMMAND_PERMISSIONS = {
   },
   search_holiday: {
     permission: "user",
-    description: "ค้นหาวันหยุด เช่น /search_holiday วันปีใหม่",
+    description: "ค้นหาวันหยุด เช่น /\u200Bsearch_holiday วันปีใหม่",
     regex: /^\/search_holiday\s+(.+)$/,
   },
 
   // คำสั่งสำหรับแอดมิน
+  // เพิ่มคำสั่งใน COMMAND_PERMISSIONS
+
   servertime: {
     permission: "admin",
     description: "ตรวจสอบเวลาของเซิร์ฟเวอร์",
     regex: /^\/servertime$/,
+  },
+  dbstatus: {
+    permission: "admin",
+    description: "ดูสถานะฐานข้อมูลและจำนวนผู้ใช้" + "\n",
+    regex: /^\/dbstatus$/,
   },
   checkin: {
     permission: "admin",
@@ -1154,17 +1173,18 @@ const COMMAND_PERMISSIONS = {
   },
   evening_full: {
     permission: "admin",
-    description: "ดูข้อความเต็มของเวลา 15:25 และ 16:25 (เย็น+ออกงาน)",
+    description: "ดูข้อความเต็มของเวลา 15:25 และ 16:25 (เย็น+ออกงาน)" + "\n",
     regex: /^\/evening_full$/,
   },
   add_holiday: {
     permission: "admin",
-    description: "เพิ่มวันหยุดพิเศษ เช่น /add_holiday 2568/01/01 วันขึ้นปีใหม่",
+    description:
+      "เพิ่มวันหยุดพิเศษ เช่น /\u200Badd... 01/01/2568 วันขึ้นปีใหม่",
     regex: /^\/add_holiday\s+(\d{1,2}\/\d{1,2}\/\d{4})(?:\s+(.+))?$/,
   },
   delete_holiday: {
     permission: "admin",
-    description: "ลบวันหยุดพิเศษ เช่น /delete_holiday 2568/01/01",
+    description: "ลบวันหยุดพิเศษ เช่น /\u200Bdel... 01/01/2568",
     regex: /^\/delete_holiday\s+(\d{1,2}\/\d{1,2}\/\d{4})$/,
   },
   reload_holidays: {
@@ -1179,13 +1199,24 @@ const COMMAND_PERMISSIONS = {
   },
   force_import_holidays: {
     permission: "admin",
-    description: "บังคับนำเข้าข้อมูลวันหยุดจาก JSON (ลบข้อมูลเดิมทั้งหมด)",
+    description:
+      "บังคับนำเข้าข้อมูลวันหยุดจาก JSON (ลบข้อมูลเดิมทั้งหมด)" + "\n",
     regex: /^\/force_import_holidays$/,
   },
-  dbstatus: {
+  add_admin: {
     permission: "admin",
-    description: "ดูสถานะฐานข้อมูลและจำนวนผู้ใช้",
-    regex: /^\/dbstatus$/,
+    description: "เพิ่มแอดมินใหม่ เช่น /\u200Badd... 1234567890",
+    regex: /^\/add_admin\s+(\d+)$/,
+  },
+  remove_admin: {
+    permission: "admin",
+    description: "ลบสิทธิ์แอดมิน เช่น /\u200Brem... 1234567890",
+    regex: /^\/remove_admin\s+(\d+)$/,
+  },
+  list_admins: {
+    permission: "admin",
+    description: "แสดงรายการแอดมินทั้งหมด" + "\n",
+    regex: /^\/list_admins$/,
   },
   start_test: {
     permission: "admin",
@@ -1206,8 +1237,8 @@ const COMMAND_PERMISSIONS = {
   // คำสั่งพิเศษ
   start: {
     permission: "all", // ทุกคนสามารถใช้คำสั่ง /start ได้
-    description: "เริ่มต้นการใช้งานบอท - แสดงข้อความช่วยเหลือ",
-    regex: /^\/ (start|help)$/
+    description: "เริ่มต้นการใช้งานบอท - ข้อความช่วยเหลือ",
+    regex: /^\/(start|help)$/,
   },
 }
 
@@ -1215,35 +1246,35 @@ const COMMAND_PERMISSIONS = {
 function buildCommandLists() {
   const USER_COMMANDS = Object.entries(COMMAND_PERMISSIONS)
     .filter(([_, cmd]) => cmd.permission === "user" || cmd.permission === "all")
-    .map(([cmdName, cmd]) => `/${cmdName} - ${cmd.description}`);
-  
+    .map(([cmdName, cmd]) => `/${cmdName} - ${cmd.description}`)
+
   const ADMIN_COMMANDS = Object.entries(COMMAND_PERMISSIONS)
     .filter(([_, cmd]) => cmd.permission === "admin")
-    .map(([cmdName, cmd]) => `/${cmdName} - ${cmd.description}`);
-  
-  return { USER_COMMANDS, ADMIN_COMMANDS };
+    .map(([cmdName, cmd]) => `/${cmdName} - ${cmd.description}`)
+
+  return { USER_COMMANDS, ADMIN_COMMANDS }
 }
 
 // ฟังก์ชันตรวจสอบสิทธิ์และส่งข้อความแจ้งเตือนถ้าไม่มีสิทธิ์
 async function checkPermission(chatId, permission) {
   // ถ้าเป็นคำสั่งสำหรับทุกคน
-  if (permission === "all") return true;
-  
+  if (permission === "all") return true
+
   // ถ้าเป็นคำสั่งสำหรับแอดมิน ตรวจสอบว่าเป็นแอดมินหรือไม่
   if (permission === "admin" && !isAdmin(chatId)) {
     await bot.sendMessage(
       chatId,
       "⛔ คำสั่งนี้สงวนไว้สำหรับผู้ดูแลระบบเท่านั้น"
-    );
+    )
     botLog(
       LOG_LEVELS.WARN,
       "permission-check",
       `ผู้ใช้ ${chatId} พยายามเรียกใช้คำสั่งแอดมิน`
-    );
-    return false;
+    )
+    return false
   }
-  
-  return true;
+
+  return true
 }
 
 // ฟังก์ชันตั้งค่า event handlers
@@ -1255,8 +1286,8 @@ function setupEventHandlers() {
         LOG_LEVELS.INFO,
         "setupEventHandlers",
         "Event handlers ได้รับการตั้งค่าแล้ว"
-      );
-      return;
+      )
+      return
     }
 
     // ล้าง event listeners เดิมทั้งหมดก่อนเพิ่มใหม่
@@ -1264,25 +1295,25 @@ function setupEventHandlers() {
       LOG_LEVELS.INFO,
       "setupEventHandlers",
       "กำลังตั้งค่า event handlers ใหม่"
-    );
-    bot.removeAllListeners();
+    )
+    bot.removeAllListeners()
 
     // เก็บ references ของทุก event handlers เพื่อป้องกันการซ้ำซ้อน
-    const handlers = {};
-    
+    const handlers = {}
+
     // สร้างรายการคำสั่งสำหรับแสดงใน /start
-    const { USER_COMMANDS, ADMIN_COMMANDS } = buildCommandLists();
+    const { USER_COMMANDS, ADMIN_COMMANDS } = buildCommandLists()
 
     // รับคำสั่งพื้นฐาน /start
-    handlers.start = bot.onText(/^\/start$/, async (msg) => {
+    handlers.start = bot.onText(/^\/(start|help)$/, async (msg) => {
       try {
-        const chatId = msg.chat.id;
-        const isAdminUser = isAdmin(chatId);
+        const chatId = msg.chat.id
+        const isAdminUser = isAdmin(chatId)
         botLog(
           LOG_LEVELS.INFO,
           "command-start",
           `ผู้ใช้ ${chatId} เรียกใช้คำสั่ง /start (Admin: ${isAdminUser})`
-        );
+        )
 
         let welcomeMessage = `
 สวัสดีครับ/ค่ะ! 👋
@@ -1297,7 +1328,7 @@ function setupEventHandlers() {
 
 คำสั่งพื้นฐาน:
 ${USER_COMMANDS.join("\n")}
-`;
+`
 
         if (isAdminUser) {
           // เพิ่มคำสั่งสำหรับแอดมิน
@@ -1305,227 +1336,241 @@ ${USER_COMMANDS.join("\n")}
   
 🔑 คำสั่งสำหรับผู้ดูแลระบบ:
 ${ADMIN_COMMANDS.join("\n")}
-`;
+`
         }
 
-        await bot.sendMessage(chatId, welcomeMessage);
+        await bot.sendMessage(chatId, welcomeMessage)
         botLog(
           LOG_LEVELS.INFO,
           "command-start",
           `ส่งข้อความต้อนรับให้ ${
             isAdminUser ? "แอดมิน" : "ผู้ใช้"
           }: ${chatId} สำเร็จ`
-        );
+        )
       } catch (error) {
-        logError("command-start", error);
+        logError("command-start", error)
       }
-    });
+    })
 
     // ลงทะเบียนคำสั่งทั้งหมด (ยกเว้น /start ที่ลงทะเบียนไปแล้ว)
     for (const [cmdName, cmdConfig] of Object.entries(COMMAND_PERMISSIONS)) {
-      if (cmdName === "start") continue; // ข้ามการลงทะเบียน /start เพราะได้ลงทะเบียนไปแล้ว
-      
+      if (cmdName === "start") continue // ข้ามการลงทะเบียน /start เพราะได้ลงทะเบียนไปแล้ว
+
       handlers[cmdName] = bot.onText(cmdConfig.regex, async (msg, match) => {
         try {
-          const chatId = msg.chat.id;
-          const username = msg.from?.username || "";
-          const firstName = msg.from?.first_name || "";
-          
+          const chatId = msg.chat.id
+          const username = msg.from?.username || ""
+          const firstName = msg.from?.first_name || ""
+
           botLog(
             LOG_LEVELS.INFO,
             `command-${cmdName}`,
-            `ผู้ใช้ ${username || firstName || chatId} เรียกใช้คำสั่ง /${cmdName}`
-          );
-          
+            `ผู้ใช้ ${
+              username || firstName || chatId
+            } เรียกใช้คำสั่ง /${cmdName}`
+          )
+
           // ตรวจสอบสิทธิ์
-          if (!await checkPermission(chatId, cmdConfig.permission)) {
-            return;
+          if (!(await checkPermission(chatId, cmdConfig.permission))) {
+            return
           }
-          
+
           // ดำเนินการตามคำสั่ง
-          await handleCommand(cmdName, msg, match);
-          
+          await handleCommand(cmdName, msg, match)
         } catch (error) {
-          logError(`command-${cmdName}`, error);
+          logError(`command-${cmdName}`, error)
           try {
             await bot.sendMessage(
               msg.chat.id,
               `❌ เกิดข้อผิดพลาดในการใช้คำสั่ง /${cmdName} โปรดลองอีกครั้ง`
-            );
+            )
           } catch (sendError) {
-            logError(`command-${cmdName}-sendError`, sendError);
+            logError(`command-${cmdName}-sendError`, sendError)
           }
         }
-      });
+      })
     }
 
     botLog(
       LOG_LEVELS.INFO,
       "setupEventHandlers",
       "ตั้งค่า event handlers เสร็จสิ้น"
-    );
-    
+    )
+
     // ตั้งค่าสถานะว่าได้เริ่มต้นแล้ว
-    eventHandlersInitialized = true;
-    return handlers;
+    eventHandlersInitialized = true
+    return handlers
   } catch (error) {
-    logError("setupEventHandlers", error);
-    return {};
+    logError("setupEventHandlers", error)
+    return {}
   }
 }
 
 // ฟังก์ชันจัดการคำสั่งที่แยกต่างหาก
 async function handleCommand(cmdName, msg, match) {
-  const chatId = msg.chat.id;
-  const username = msg.from?.username || "";
-  const firstName = msg.from?.first_name || "";
-  
-  switch(cmdName) {
+  const chatId = msg.chat.id
+  const username = msg.from?.username || ""
+  const firstName = msg.from?.first_name || ""
+
+  switch (cmdName) {
     case "servertime":
-      await handleServertime(msg);
-      break;
-      
+      await handleServertime(msg)
+      break
+
     case "status":
       await bot.sendMessage(
         chatId,
         "✅ บอทกำลังทำงานปกติ และพร้อมส่งข้อความแจ้งเตือนตามเวลาที่กำหนด!"
-      );
+      )
       botLog(
         LOG_LEVELS.INFO,
         "command-status",
         `ส่งข้อมูลสถานะให้ผู้ใช้ ${chatId} สำเร็จ`
-      );
-      break;
-      
+      )
+      break
+
     case "subscribe":
-      await handleSubscribe(msg);
-      break;
-      
+      await handleSubscribe(msg)
+      break
+
     case "unsubscribe":
-      await handleUnsubscribe(msg);
-      break;
-      
+      await handleUnsubscribe(msg)
+      break
+
     case "myinfo":
-      await handleMyInfo(msg);
-      break;
-      
+      await handleMyInfo(msg)
+      break
+
     case "checkin":
-      await bot.sendMessage(chatId, getCheckInReminderMessage());
+      await bot.sendMessage(chatId, getCheckInReminderMessage())
       botLog(
         LOG_LEVELS.INFO,
         "command-checkin",
         `ส่งข้อความแจ้งเตือนลงเวลาเข้างานให้ ${
           username || firstName || chatId
         } สำเร็จ`
-      );
-      break;
-      
+      )
+      break
+
     case "checkout":
-      await bot.sendMessage(chatId, getCheckOutReminderMessage());
+      await bot.sendMessage(chatId, getCheckOutReminderMessage())
       botLog(
         LOG_LEVELS.INFO,
         "command-checkout",
         `ส่งข้อความแจ้งเตือนลงเวลาออกงานให้ ${
           username || firstName || chatId
         } สำเร็จ`
-      );
-      break;
-      
+      )
+      break
+
     case "morning":
-      await bot.sendMessage(chatId, getMorningMessage());
+      await bot.sendMessage(chatId, getMorningMessage())
       botLog(
         LOG_LEVELS.INFO,
         "command-morning",
         `ส่งข้อความตอนเช้าให้ ${username || firstName || chatId} สำเร็จ`
-      );
-      break;
-      
+      )
+      break
+
     case "evening":
-      await bot.sendMessage(chatId, getEveningMessage());
+      await bot.sendMessage(chatId, getEveningMessage())
       botLog(
         LOG_LEVELS.INFO,
         "command-evening",
         `ส่งข้อความตอนเย็นให้ ${username || firstName || chatId} สำเร็จ`
-      );
-      break;
-      
+      )
+      break
+
     case "morning_full":
       const morningFullMessage =
-        getMorningMessage() + "\n\n" + getCheckInReminderMessage();
-      await bot.sendMessage(chatId, morningFullMessage);
+        getMorningMessage() + "\n\n" + getCheckInReminderMessage()
+      await bot.sendMessage(chatId, morningFullMessage)
       botLog(
         LOG_LEVELS.INFO,
         "command-morning_full",
         `ส่งข้อความเต็มตอนเช้าให้ ${username || firstName || chatId} สำเร็จ`
-      );
-      break;
-      
+      )
+      break
+
     case "evening_full":
       const eveningFullMessage =
-        getEveningMessage() + "\n\n" + getCheckOutReminderMessage();
-      await bot.sendMessage(chatId, eveningFullMessage);
+        getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
+      await bot.sendMessage(chatId, eveningFullMessage)
       botLog(
         LOG_LEVELS.INFO,
         "command-evening_full",
         `ส่งข้อความเต็มตอนเย็นให้ ${username || firstName || chatId} สำเร็จ`
-      );
-      break;
-      
+      )
+      break
+
     case "add_holiday":
-      await handleAddHoliday(msg, match);
-      break;
-      
+      await handleAddHoliday(msg, match)
+      break
+
     case "delete_holiday":
-      await handleDeleteHoliday(msg, match);
-      break;
-      
+      await handleDeleteHoliday(msg, match)
+      break
+
     case "list_holidays":
-      await handleListHolidays(msg);
-      break;
-      
+      await handleListHolidays(msg)
+      break
+
     case "search_holiday":
-      await handleSearchHoliday(msg, match);
-      break;
-      
+      await handleSearchHoliday(msg, match)
+      break
+
     case "reload_holidays":
-      holidaysData = loadHolidays();
+      holidaysData = loadHolidays()
       await bot.sendMessage(
         chatId,
         `✅ โหลดข้อมูลวันหยุดใหม่สำเร็จ\nมีวันหยุดทั้งหมด ${holidaysData.holidays.length} วัน`
-      );
+      )
       botLog(
         LOG_LEVELS.INFO,
         "command-reload_holidays",
         `แอดมิน ${chatId} โหลดข้อมูลวันหยุด ${holidaysData.holidays.length} รายการสำเร็จ`
-      );
-      break;
-      
+      )
+      break
+
     case "import_holidays":
-      await handleImportHolidays(msg);
-      break;
-      
+      await handleImportHolidays(msg)
+      break
+
     case "force_import_holidays":
-      await handleForceImportHolidays(msg);
-      break;
-      
+      await handleForceImportHolidays(msg)
+      break
+
     case "dbstatus":
-      await handleDbStatus(msg);
-      break;
-      
+      await handleDbStatus(msg)
+      break
+
     case "start_test":
-      await handleStartTest(msg);
-      break;
-      
+      await handleStartTest(msg)
+      break
+
     case "stop_test":
-      await handleStopTest(msg);
-      break;
-      
+      await handleStopTest(msg)
+      break
+
     case "reset_webhook":
-      await handleResetWebhook(msg);
-      break;
-      
+      await handleResetWebhook(msg)
+      break
+
+    // เพิ่มใน switch-case ของฟังก์ชัน handleCommand
+    case "add_admin":
+      await handleAddAdmin(msg, match)
+      break
+
+    case "remove_admin":
+      await handleRemoveAdmin(msg, match)
+      break
+
+    case "list_admins":
+      await handleListAdmins(msg)
+      break
+
     default:
-      await bot.sendMessage(chatId, "คำสั่งไม่ถูกต้องหรือยังไม่ได้กำหนด");
+      await bot.sendMessage(chatId, "คำสั่งไม่ถูกต้องหรือยังไม่ได้กำหนด")
   }
 }
 
@@ -1576,28 +1621,26 @@ async function handleServertime(msg) {
 }
 
 async function handleSubscribe(msg) {
-  const chatId = msg.chat.id;
-  const username = msg.from.username || "";
-  const firstName = msg.from.first_name || "";
-  const lastName = msg.from.last_name || "";
+  const chatId = msg.chat.id
+  const username = msg.from.username || ""
+  const firstName = msg.from.first_name || ""
+  const lastName = msg.from.last_name || ""
 
   // ตรวจสอบว่าผู้ใช้มีอยู่แล้วและสมัครรับการแจ้งเตือนอยู่หรือไม่
-  const userInfo = await getUserByChatId(chatId);
+  const userInfo = await getUserByChatId(chatId)
 
   if (userInfo && userInfo.is_subscribed) {
     // กรณีผู้ใช้สมัครอยู่แล้ว
     await bot.sendMessage(
       chatId,
       "ℹ️ คุณมีข้อมูลสมัครรับการแจ้งเตือนในระบบแล้ว ระบบจะส่งข้อความแจ้งเตือนตามเวลาที่กำหนด"
-    );
+    )
     botLog(
       LOG_LEVELS.INFO,
       "command-subscribe",
-      `ผู้ใช้ ${
-        username || firstName || chatId
-      } สมัครรับการแจ้งเตือนในระบบแล้ว`
-    );
-    return;
+      `ผู้ใช้ ${username || firstName || chatId} สมัครรับการแจ้งเตือนในระบบแล้ว`
+    )
+    return
   }
 
   // สมัครหรืออัปเดตการสมัคร
@@ -1609,40 +1652,38 @@ async function handleSubscribe(msg) {
       lastName: lastName,
     },
     true
-  );
+  )
 
   // กรณีเป็นผู้ใช้ใหม่หรือผู้ใช้ที่เคยยกเลิกแล้วกลับมาสมัครใหม่
   if (!userInfo) {
     await bot.sendMessage(
       chatId,
       "✅ คุณสมัครรับการแจ้งเตือนเรียบร้อยแล้ว! เราจะส่งข้อความแจ้งเตือนตามเวลาที่กำหนด"
-    );
+    )
     botLog(
       LOG_LEVELS.INFO,
       "command-subscribe",
-      `ผู้ใช้ใหม่ ${
-        username || firstName || chatId
-      } สมัครรับการแจ้งเตือนสำเร็จ`
-    );
+      `ผู้ใช้ใหม่ ${username || firstName || chatId} สมัครรับการแจ้งเตือนสำเร็จ`
+    )
   } else {
     await bot.sendMessage(
       chatId,
       "✅ คุณได้เปิดรับการแจ้งเตือนอีกครั้ง! เราจะส่งข้อความแจ้งเตือนตามเวลาที่กำหนด"
-    );
+    )
     botLog(
       LOG_LEVELS.INFO,
       "command-subscribe",
       `ผู้ใช้เก่า ${
         username || firstName || chatId
       } กลับมาสมัครรับการแจ้งเตือนอีกครั้ง`
-    );
+    )
   }
 }
 
 async function handleUnsubscribe(msg) {
-  const chatId = msg.chat.id;
-  const username = msg.from.username || "";
-  const firstName = msg.from.first_name || "";
+  const chatId = msg.chat.id
+  const username = msg.from.username || ""
+  const firstName = msg.from.first_name || ""
 
   // แก้ไขโดยใช้ updateUserSubscription แทนการ DELETE
   const success = await updateUserSubscription(
@@ -1653,58 +1694,50 @@ async function handleUnsubscribe(msg) {
       lastName: msg.from.last_name || "",
     },
     false // ตั้งค่า is_subscribed เป็น false แทนการลบทิ้ง
-  );
+  )
 
   if (success) {
-    await bot.sendMessage(
-      chatId,
-      "✅ คุณยกเลิกรับการแจ้งเตือนเรียบร้อยแล้ว!"
-    );
+    await bot.sendMessage(chatId, "✅ คุณยกเลิกรับการแจ้งเตือนเรียบร้อยแล้ว!")
     botLog(
       LOG_LEVELS.INFO,
       "command-unsubscribe",
-      `ผู้ใช้ ${
-        username || firstName || chatId
-      } ยกเลิกรับการแจ้งเตือนสำเร็จ`
-    );
+      `ผู้ใช้ ${username || firstName || chatId} ยกเลิกรับการแจ้งเตือนสำเร็จ`
+    )
   } else {
     await bot.sendMessage(
       chatId,
       "⚠️ ไม่สามารถยกเลิกรับการแจ้งเตือนได้ โปรดลองอีกครั้ง"
-    );
+    )
     botLog(
       LOG_LEVELS.WARN,
       "command-unsubscribe",
       `ไม่สามารถยกเลิกรับการแจ้งเตือนของผู้ใช้ ${
         username || firstName || chatId
       } ได้`
-    );
+    )
   }
 }
 
 async function handleMyInfo(msg) {
-  const chatId = msg.chat.id;
-  const username = msg.from.username || "";
-  const firstName = msg.from.first_name || "";
+  const chatId = msg.chat.id
+  const username = msg.from.username || ""
+  const firstName = msg.from.first_name || ""
 
-  const userInfo = await getUserByChatId(chatId);
+  const userInfo = await getUserByChatId(chatId)
   if (userInfo) {
     const statusText = userInfo.is_subscribed
       ? "✅ สมัครรับข้อความแจ้งเตือน"
-      : "❌ ไม่ได้สมัครรับข้อความแจ้งเตือน";
+      : "❌ ไม่ได้สมัครรับข้อความแจ้งเตือน"
 
-    let registrationDate = userInfo.date_added || "ไม่ระบุ";
+    let registrationDate = userInfo.date_added || "ไม่ระบุ"
     if (registrationDate !== "ไม่ระบุ") {
-      const date = dayjs(userInfo.date_added).tz(THAI_TIMEZONE);
-      registrationDate = date.format(
-        `DD/MM/${date.year() + 543} - HH:mm น.`
-      );
+      const date = dayjs(userInfo.date_added).tz(THAI_TIMEZONE)
+      registrationDate = date.format(`DD/MM/${date.year() + 543} - HH:mm น.`)
     }
 
     const fullName =
-      [userInfo.first_name, userInfo.last_name]
-        .filter(Boolean)
-        .join(" ") || "ไม่ระบุ";
+      [userInfo.first_name, userInfo.last_name].filter(Boolean).join(" ") ||
+      "ไม่ระบุ"
     const message = `
 📋 *ข้อมูลของคุณในระบบ*:
 
@@ -1718,357 +1751,491 @@ ${
     ? "🚫 หากต้องการยกเลิกรับการแจ้งเตือน คลิก /unsubscribe"
     : "📝 หากต้องการสมัครรับการแจ้งเตือน คลิก /subscribe"
 }
-        `;
-    await bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
+        `
+    await bot.sendMessage(chatId, message, { parse_mode: "Markdown" })
     botLog(
       LOG_LEVELS.INFO,
       "command-myinfo",
       `ส่งข้อมูลผู้ใช้ให้ ${username || firstName || chatId} สำเร็จ`
-    );
+    )
   } else {
     await bot.sendMessage(
       chatId,
       "ไม่พบข้อมูลของคุณในระบบ หากต้องการสมัคร คลิก /subscribe เพื่อลงทะเบียน"
-    );
+    )
     botLog(
       LOG_LEVELS.INFO,
       "command-myinfo",
       `ไม่พบข้อมูลผู้ใช้ ${username || firstName || chatId} ในระบบ`
-    );
+    )
   }
 }
 
 async function handleListHolidays(msg) {
-  const chatId = msg.chat.id;
-  const username = msg.from.username || "";
-  const firstName = msg.from.first_name || "";
+  const chatId = msg.chat.id
+  const username = msg.from.username || ""
+  const firstName = msg.from.first_name || ""
 
-  const holidays = await getAllHolidays();
+  const holidays = await getAllHolidays()
   if (holidays.length === 0) {
-    await bot.sendMessage(chatId, "ไม่มีวันหยุดพิเศษที่กำหนดไว้");
-    botLog(
-      LOG_LEVELS.INFO,
-      "command-list_holidays",
-      `ไม่พบข้อมูลวันหยุดในระบบ`
-    );
-    return;
+    await bot.sendMessage(chatId, "ไม่มีวันหยุดพิเศษที่กำหนดไว้")
+    botLog(LOG_LEVELS.INFO, "command-list_holidays", `ไม่พบข้อมูลวันหยุดในระบบ`)
+    return
   }
 
-  let holidayList = "📅 รายการวันหยุดพิเศษ:\n\n";
+  let holidayList = "📅 รายการวันหยุดพิเศษ:\n\n"
   holidays.forEach((holiday) => {
-    const date = dayjs(holiday.holiday_date);
-    const thaiDate = date.format(`DD/MM/${date.year() + 543}`); // แสดงในรูปแบบไทย
-    holidayList += `${thaiDate} - ${holiday.holiday_name}\n`;
-  });
+    const date = dayjs(holiday.holiday_date)
+    const thaiDate = date.format(`DD/MM/${date.year() + 543}`) // แสดงในรูปแบบไทย
+    holidayList += `${thaiDate} - ${holiday.holiday_name}\n`
+  })
 
-  await bot.sendMessage(chatId, holidayList);
+  await bot.sendMessage(chatId, holidayList)
   botLog(
     LOG_LEVELS.INFO,
     "command-list_holidays",
     `ส่งรายการวันหยุด ${holidays.length} รายการให้ผู้ใช้ ${
       username || firstName || chatId
     } สำเร็จ`
-  );
+  )
 }
 
 async function handleSearchHoliday(msg, match) {
-  const chatId = msg.chat.id;
-  const keyword = match[1];
-  const username = msg.from.username || "";
-  const firstName = msg.from.first_name || "";
+  const chatId = msg.chat.id
+  const keyword = match[1]
+  const username = msg.from.username || ""
+  const firstName = msg.from.first_name || ""
 
-  const holidays = await searchHolidays(keyword);
+  const holidays = await searchHolidays(keyword)
   if (holidays.length === 0) {
-    await bot.sendMessage(chatId, `ไม่พบวันหยุดที่มีคำว่า "${keyword}"`);
+    await bot.sendMessage(chatId, `ไม่พบวันหยุดที่มีคำว่า "${keyword}"`)
     botLog(
       LOG_LEVELS.INFO,
       "command-search_holiday",
       `ไม่พบวันหยุดที่มีคำว่า "${keyword}"`
-    );
-    return;
+    )
+    return
   }
 
-  let resultList = `🔍 ผลการค้นหาวันหยุด "${keyword}":\n\n`;
+  let resultList = `🔍 ผลการค้นหาวันหยุด "${keyword}":\n\n`
   holidays.forEach((holiday) => {
-    const date = dayjs(holiday.holiday_date);
-    const thaiDate = date.format(`DD/MM/${date.year() + 543}`);
-    resultList += `${thaiDate} - ${holiday.holiday_name}\n`;
-  });
+    const date = dayjs(holiday.holiday_date)
+    const thaiDate = date.format(`DD/MM/${date.year() + 543}`)
+    resultList += `${thaiDate} - ${holiday.holiday_name}\n`
+  })
 
-  await bot.sendMessage(chatId, resultList);
+  await bot.sendMessage(chatId, resultList)
   botLog(
     LOG_LEVELS.INFO,
     "command-search_holiday",
     `ส่งผลการค้นหาวันหยุด ${holidays.length} รายการให้ผู้ใช้ ${
       username || firstName || chatId
     } สำเร็จ`
-  );
+  )
 }
 
 async function handleAddHoliday(msg, match) {
-  const chatId = msg.chat.id;
-  const thaiDate = match[1];
-  const description = match[2] || "วันหยุดพิเศษ";
+  const chatId = msg.chat.id
+  const thaiDate = match[1]
+  const description = match[2] || "วันหยุดพิเศษ"
 
   // แปลงวันที่จากรูปแบบไทยเป็น ISO
-  const isoDate = thaiDateToIsoDate(thaiDate);
+  const isoDate = thaiDateToIsoDate(thaiDate)
   if (!isoDate) {
     await bot.sendMessage(
       chatId,
       "❌ รูปแบบวันที่ไม่ถูกต้อง กรุณาใช้รูปแบบ วัน/เดือน/ปี(พ.ศ.) เช่น 01/01/2568"
-    );
+    )
     botLog(
       LOG_LEVELS.WARN,
       "command-add_holiday",
       `แอดมิน ${chatId} ใส่รูปแบบวันที่ไม่ถูกต้อง: ${thaiDate}`
-    );
-    return;
+    )
+    return
   }
 
-  const success = await addHoliday(isoDate, description);
+  const success = await addHoliday(isoDate, description)
   if (success) {
     await bot.sendMessage(
       chatId,
       `✅ เพิ่มวันหยุด ${thaiDate} (${description}) เรียบร้อยแล้ว`
-    );
+    )
     botLog(
       LOG_LEVELS.INFO,
       "command-add_holiday",
       `แอดมิน ${chatId} เพิ่มวันหยุด ${thaiDate} (${description}) สำเร็จ`
-    );
+    )
   } else {
-    await bot.sendMessage(chatId, "❌ เกิดข้อผิดพลาดในการบันทึกวันหยุด");
+    await bot.sendMessage(chatId, "❌ เกิดข้อผิดพลาดในการบันทึกวันหยุด")
     botLog(
       LOG_LEVELS.ERROR,
       "command-add_holiday",
       `แอดมิน ${chatId} ไม่สามารถเพิ่มวันหยุด ${thaiDate} (${description}) ได้`
-    );
+    )
   }
 }
 
 async function handleDeleteHoliday(msg, match) {
-  const chatId = msg.chat.id;
-  const thaiDate = match[1];
+  const chatId = msg.chat.id
+  const thaiDate = match[1]
 
   // แปลงวันที่จากรูปแบบไทยเป็น ISO
-  const isoDate = thaiDateToIsoDate(thaiDate);
+  const isoDate = thaiDateToIsoDate(thaiDate)
   if (!isoDate) {
     await bot.sendMessage(
       chatId,
       "❌ รูปแบบวันที่ไม่ถูกต้อง กรุณาใช้รูปแบบ วัน/เดือน/ปี(พ.ศ.) เช่น 01/01/2568"
-    );
+    )
     botLog(
       LOG_LEVELS.WARN,
       "command-delete_holiday",
       `แอดมิน ${chatId} ใส่รูปแบบวันที่ไม่ถูกต้อง: ${thaiDate}`
-    );
-    return;
+    )
+    return
   }
 
-  const success = await deleteHoliday(isoDate);
+  const success = await deleteHoliday(isoDate)
   if (success) {
-    await bot.sendMessage(
-      chatId,
-      `✅ ลบวันหยุด ${thaiDate} เรียบร้อยแล้ว`
-    );
+    await bot.sendMessage(chatId, `✅ ลบวันหยุด ${thaiDate} เรียบร้อยแล้ว`)
     botLog(
       LOG_LEVELS.INFO,
       "command-delete_holiday",
       `แอดมิน ${chatId} ลบวันหยุด ${thaiDate} สำเร็จ`
-    );
+    )
   } else {
     await bot.sendMessage(
       chatId,
       `❌ ไม่พบวันหยุด ${thaiDate} หรือเกิดข้อผิดพลาดในการลบ`
-    );
+    )
     botLog(
       LOG_LEVELS.WARN,
       "command-delete_holiday",
       `แอดมิน ${chatId} ไม่สามารถลบวันหยุด ${thaiDate} ได้`
-    );
+    )
   }
 }
 
 async function handleImportHolidays(msg) {
-  const chatId = msg.chat.id;
+  const chatId = msg.chat.id
 
-  const result = await importHolidaysFromJson();
+  const result = await importHolidaysFromJson()
   if (result) {
     await bot.sendMessage(
       chatId,
       "✅ นำเข้าข้อมูลวันหยุดจาก JSON เรียบร้อยแล้ว"
-    );
+    )
     botLog(
       LOG_LEVELS.INFO,
       "command-import_holidays",
       `แอดมิน ${chatId} นำเข้าข้อมูลวันหยุดจาก JSON สำเร็จ`
-    );
+    )
   } else {
     await bot.sendMessage(
       chatId,
       "ℹ️ มีข้อมูลในฐานข้อมูลแล้ว ข้ามการนำเข้า หากต้องการนำเข้าซ้ำ กรุณาใช้คำสั่ง /force_import_holidays"
-    );
+    )
     botLog(
       LOG_LEVELS.INFO,
       "command-import_holidays",
       `มีข้อมูลในฐานข้อมูลแล้ว ข้ามการนำเข้า`
-    );
+    )
   }
 }
 
 async function handleForceImportHolidays(msg) {
-  const chatId = msg.chat.id;
+  const chatId = msg.chat.id
 
   try {
-    let conn = await getConnection();
+    let conn = await getConnection()
     // ลบข้อมูลวันหยุดทั้งหมด
-    await conn.query("TRUNCATE TABLE holidays");
-    await conn.end();
+    await conn.query("TRUNCATE TABLE holidays")
+    await conn.end()
 
     botLog(
       LOG_LEVELS.INFO,
       "command-force_import_holidays",
       `ลบข้อมูลวันหยุดเดิมทั้งหมดสำเร็จ`
-    );
+    )
 
     // นำเข้าข้อมูลใหม่
-    const result = await importHolidaysFromJson();
+    const result = await importHolidaysFromJson()
     if (result) {
       await bot.sendMessage(
         chatId,
         "✅ บังคับนำเข้าข้อมูลวันหยุดจาก JSON เรียบร้อยแล้ว"
-      );
+      )
       botLog(
         LOG_LEVELS.INFO,
         "command-force_import_holidays",
         `แอดมิน ${chatId} บังคับนำเข้าข้อมูลวันหยุดจาก JSON สำเร็จ`
-      );
+      )
     } else {
-      await bot.sendMessage(
-        chatId,
-        "❌ ไม่สามารถนำเข้าข้อมูลวันหยุดได้"
-      );
+      await bot.sendMessage(chatId, "❌ ไม่สามารถนำเข้าข้อมูลวันหยุดได้")
       botLog(
         LOG_LEVELS.ERROR,
         "command-force_import_holidays",
         `แอดมิน ${chatId} ไม่สามารถนำเข้าข้อมูลวันหยุดได้`
-      );
+      )
     }
   } catch (dbError) {
-    logError("command-force_import_holidays-db", dbError);
+    logError("command-force_import_holidays-db", dbError)
     await bot.sendMessage(
       chatId,
       "❌ เกิดข้อผิดพลาดในการทำงานกับฐานข้อมูล: " + dbError.message
-    );
+    )
   }
 }
 
 async function handleDbStatus(msg) {
-  const chatId = msg.chat.id;
+  const chatId = msg.chat.id
 
-  const subscribers = await getSubscribedUsers();
-  const conn = await getConnection();
+  const subscribers = await getSubscribedUsers()
+  const conn = await getConnection()
 
   // ดึงจำนวนผู้ใช้ทั้งหมด
-  const [totalUsers] = await conn.query(
-    "SELECT COUNT(*) as count FROM users"
-  );
-  await conn.end();
+  const [totalUsers] = await conn.query("SELECT COUNT(*) as count FROM users")
+  await conn.end()
 
   const message = `
 📊 สถานะฐานข้อมูล:
 
 - จำนวนผู้ใช้ทั้งหมด: ${totalUsers[0].count} คน
 - จำนวนผู้สมัครรับข้อความ: ${subscribers.length} คน
-      `;
+      `
 
-  await bot.sendMessage(chatId, message);
+  await bot.sendMessage(chatId, message)
   botLog(
     LOG_LEVELS.INFO,
     "command-dbstatus",
     `ส่งข้อมูลสถานะฐานข้อมูลให้แอดมิน ${chatId} สำเร็จ`
-  );
+  )
 }
 
 async function handleStartTest(msg) {
-  const chatId = msg.chat.id;
+  const chatId = msg.chat.id
 
   if (isTestCronRunning) {
-    await bot.sendMessage(chatId, "⚠️ การทดสอบกำลังทำงานอยู่แล้ว!");
-    botLog(
-      LOG_LEVELS.WARN,
-      "command-start_test",
-      `การทดสอบกำลังทำงานอยู่แล้ว`
-    );
-    return;
+    await bot.sendMessage(chatId, "⚠️ การทดสอบกำลังทำงานอยู่แล้ว!")
+    botLog(LOG_LEVELS.WARN, "command-start_test", `การทดสอบกำลังทำงานอยู่แล้ว`)
+    return
   }
 
   if (testCron) {
-    testCron.start();
-    isTestCronRunning = true;
-    await bot.sendMessage(
-      chatId,
-      "✅ เริ่มการทดสอบแล้ว! แจ้งเตือนทุก 2 นาที"
-    );
+    testCron.start()
+    isTestCronRunning = true
+    await bot.sendMessage(chatId, "✅ เริ่มการทดสอบแล้ว! แจ้งเตือนทุก 2 นาที")
     botLog(
       LOG_LEVELS.INFO,
       "command-start_test",
       `แอดมิน ${chatId} เริ่มการทดสอบส่งข้อความทุก 2 นาทีสำเร็จ`
-    );
+    )
   } else {
-    await bot.sendMessage(chatId, "❌ ไม่สามารถเริ่มการทดสอบได้ ไม่พบ cron job");
+    await bot.sendMessage(chatId, "❌ ไม่สามารถเริ่มการทดสอบได้ ไม่พบ cron job")
     botLog(
       LOG_LEVELS.ERROR,
       "command-start_test",
       `ไม่สามารถเริ่ม testCron เนื่องจากไม่มีการสร้าง`
-    );
+    )
   }
 }
 
 async function handleStopTest(msg) {
-  const chatId = msg.chat.id;
+  const chatId = msg.chat.id
 
   if (!isTestCronRunning || !testCron) {
-    await bot.sendMessage(chatId, "⚠️ ไม่มีการทดสอบที่กำลังทำงานอยู่!");
+    await bot.sendMessage(chatId, "⚠️ ไม่มีการทดสอบที่กำลังทำงานอยู่!")
     botLog(
       LOG_LEVELS.WARN,
       "command-stop_test",
       `ไม่มีการทดสอบที่กำลังทำงานอยู่`
-    );
-    return;
+    )
+    return
   }
 
-  testCron.stop();
-  isTestCronRunning = false;
-  await bot.sendMessage(chatId, "✅ หยุดการทดสอบเรียบร้อยแล้ว!");
+  testCron.stop()
+  isTestCronRunning = false
+  await bot.sendMessage(chatId, "✅ หยุดการทดสอบเรียบร้อยแล้ว!")
   botLog(
     LOG_LEVELS.INFO,
     "command-stop_test",
     `แอดมิน ${chatId} หยุดการทดสอบสำเร็จ`
-  );
+  )
 }
 
 async function handleResetWebhook(msg) {
-  const chatId = msg.chat.id;
+  const chatId = msg.chat.id
 
-  await bot.deleteWebHook();
-  botLog(
-    LOG_LEVELS.INFO,
-    "command-reset_webhook",
-    `ลบ webhook เดิมสำเร็จ`
-  );
+  await bot.deleteWebHook()
+  botLog(LOG_LEVELS.INFO, "command-reset_webhook", `ลบ webhook เดิมสำเร็จ`)
 
-  const result = await bot.setWebHook(`${appUrl}/bot${token}`);
+  const result = await bot.setWebHook(`${appUrl}/bot${token}`)
   botLog(
     LOG_LEVELS.INFO,
     "command-reset_webhook",
     `ตั้งค่า webhook ใหม่: ${appUrl}/bot${token} ผลลัพธ์: ${result}`
-  );
+  )
 
   await bot.sendMessage(
     chatId,
     `✅ รีเซ็ต webhook สำเร็จ\nWebhook URL: ${appUrl}/bot${token}`
-  );
+  )
+}
+
+async function handleAddAdmin(msg, match) {
+  const adminChatId = msg.chat.id
+  const targetChatId = match[1]
+
+  // ตรวจสอบว่ามีผู้ใช้นี้ในระบบหรือไม่
+  const userInfo = await getUserByChatId(targetChatId)
+
+  if (!userInfo) {
+    await bot.sendMessage(
+      adminChatId,
+      "❌ ไม่พบผู้ใช้นี้ในระบบ ผู้ใช้ต้องเคยใช้คำสั่ง /start กับบอทก่อน"
+    )
+    return
+  }
+
+  if (userInfo.role === "admin") {
+    await bot.sendMessage(adminChatId, "ℹ️ ผู้ใช้นี้เป็นแอดมินอยู่แล้ว")
+    return
+  }
+
+  // อัปเดตสิทธิ์เป็นแอดมิน
+  try {
+    const conn = await getConnection()
+    await conn.query("UPDATE users SET role = 'admin' WHERE chat_id = ?", [
+      targetChatId,
+    ])
+    await conn.end()
+
+    await bot.sendMessage(
+      adminChatId,
+      `✅ เพิ่ม ${targetChatId} เป็นแอดมินสำเร็จ`
+    )
+
+    // แจ้งเตือนผู้ใช้ที่ได้รับสิทธิ์
+    await bot.sendMessage(
+      targetChatId,
+      "🎉 คุณได้รับสิทธิ์เป็นแอดมินของบอทแล้ว!"
+    )
+
+    botLog(
+      LOG_LEVELS.INFO,
+      "admin-management",
+      `แอดมิน ${adminChatId} เพิ่ม ${targetChatId} เป็นแอดมินสำเร็จ`
+    )
+  } catch (error) {
+    logError("add-admin", error)
+    await bot.sendMessage(adminChatId, "❌ เกิดข้อผิดพลาดในการเพิ่มแอดมิน")
+  }
+}
+
+async function handleRemoveAdmin(msg, match) {
+  const adminChatId = msg.chat.id
+  const targetChatId = match[1]
+
+  // ป้องกันการลบสิทธิ์ของตัวเอง
+  if (String(targetChatId) === String(adminChatId)) {
+    await bot.sendMessage(adminChatId, "⚠️ ไม่สามารถลบสิทธิ์ของตัวเองได้")
+    return
+  }
+
+  // ป้องกันการลบสิทธิ์ของ super admin (จาก .env)
+  if (String(targetChatId) === process.env.ADMIN_CHAT_ID) {
+    await bot.sendMessage(
+      adminChatId,
+      "⚠️ ไม่สามารถลบสิทธิ์ของ Super Admin ได้"
+    )
+    return
+  }
+
+  // ตรวจสอบว่ามีผู้ใช้นี้ในระบบหรือไม่
+  const userInfo = await getUserByChatId(targetChatId)
+
+  if (!userInfo) {
+    await bot.sendMessage(adminChatId, "❌ ไม่พบผู้ใช้นี้ในระบบ")
+    return
+  }
+
+  if (userInfo.role !== "admin") {
+    await bot.sendMessage(adminChatId, "ℹ️ ผู้ใช้นี้ไม่ได้เป็นแอดมิน")
+    return
+  }
+
+  // อัปเดตสิทธิ์เป็นผู้ใช้ปกติ
+  try {
+    const conn = await getConnection()
+    await conn.query("UPDATE users SET role = 'user' WHERE chat_id = ?", [
+      targetChatId,
+    ])
+    await conn.end()
+
+    await bot.sendMessage(
+      adminChatId,
+      `✅ ลบสิทธิ์แอดมิน ${targetChatId} สำเร็จ`
+    )
+
+    // แจ้งเตือนผู้ใช้ที่ถูกลบสิทธิ์
+    await bot.sendMessage(targetChatId, "ℹ️ สิทธิ์แอดมินของคุณได้ถูกยกเลิกแล้ว")
+
+    botLog(
+      LOG_LEVELS.INFO,
+      "admin-management",
+      `แอดมิน ${adminChatId} ลบสิทธิ์แอดมิน ${targetChatId} สำเร็จ`
+    )
+  } catch (error) {
+    logError("remove-admin", error)
+    await bot.sendMessage(adminChatId, "❌ เกิดข้อผิดพลาดในการลบสิทธิ์แอดมิน")
+  }
+}
+
+async function handleListAdmins(msg) {
+  const chatId = msg.chat.id
+
+  try {
+    const conn = await getConnection()
+    const [admins] = await conn.query(
+      "SELECT chat_id, username, first_name, last_name FROM users WHERE role = 'admin'"
+    )
+    await conn.end()
+
+    if (admins.length === 0) {
+      await bot.sendMessage(
+        chatId,
+        "ไม่พบแอดมินในระบบ (ไม่รวม Super Admin จาก .env)"
+      )
+      return
+    }
+
+    let message = "👑 รายชื่อแอดมินทั้งหมด:\n\n"
+
+    admins.forEach((admin, index) => {
+      const name =
+        [admin.first_name, admin.last_name].filter(Boolean).join(" ") ||
+        "ไม่ระบุ"
+      const username = admin.username ? `@${admin.username}` : "ไม่ระบุ"
+
+      message += `${index + 1}. ${name} (${username})\n`
+      message += `   ID: ${admin.chat_id}\n`
+
+      if (String(admin.chat_id) === process.env.ADMIN_CHAT_ID) {
+        message += "   🔱 Super Admin\n"
+      }
+
+      message += "\n"
+    })
+
+    await bot.sendMessage(chatId, message)
+    botLog(
+      LOG_LEVELS.INFO,
+      "command-list_admins",
+      `แอดมิน ${chatId} ดูรายชื่อแอดมินทั้งหมด ${admins.length} คน`
+    )
+  } catch (error) {
+    logError("list-admins", error)
+    await bot.sendMessage(chatId, "❌ เกิดข้อผิดพลาดในการดึงรายชื่อแอดมิน")
+  }
 }
 
 // เพิ่มเส้นทางสำหรับทดสอบส่งข้อความ
