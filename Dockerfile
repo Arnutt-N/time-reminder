@@ -3,6 +3,9 @@ FROM node:18-alpine as builder
 
 WORKDIR /app
 
+# Copy the environment file
+COPY env/.env.production ./env/
+
 # Copy package files for dependency installation
 COPY package*.json ./
 
