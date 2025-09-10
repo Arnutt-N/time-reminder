@@ -148,30 +148,10 @@ deploy_service() {
         exit 1
     fi
     
-    # Build environment variables array to handle special characters properly
-    ENV_VARS_ARRAY=(
-        "NODE_ENV=production"
-        "TZ=Asia/Bangkok"
-        "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN"
-        "TIDB_HOST=$TIDB_HOST"
-        "TIDB_PORT=${TIDB_PORT:-4000}"
-        "TIDB_USER=$TIDB_USER"
-        "TIDB_PASSWORD=$TIDB_PASSWORD"
-        "TIDB_DATABASE=$TIDB_DATABASE"
-        "ADMIN_CHAT_ID=$ADMIN_CHAT_ID"
-        "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-$ADMIN_CHAT_ID}"
-        "CRON_SECRET=$CRON_SECRET"
-        "APP_URL=${APP_URL:-https://$SERVICE_NAME-$PROJECT_ID.a.run.app}"
-        "TIDB_ENABLE_SSL=true"
-        "LOG_LEVEL=INFO"
-        "LOG_TO_FILE=false"
-    )
-    
-    # Join array elements with commas
-    ENV_VARS_JOINED=$(IFS=,; echo "${ENV_VARS_ARRAY[*]}")
-    ENV_VARS_FINAL="--set-env-vars $ENV_VARS_JOINED"
+    # Use multiple --set-env-vars flags to handle special characters properly
+    log_info "Deploying with environment variables..."
 
-    # Deploy the service with environment variables
+    # Deploy the service with environment variables using multiple --set-env-vars flags
     gcloud run deploy $SERVICE_NAME \
         --image $IMAGE_NAME:latest \
         --platform managed \
@@ -184,7 +164,21 @@ deploy_service() {
         --min-instances 0 \
         --timeout 300 \
         --concurrency 80 \
-        $ENV_VARS_FINAL
+        --set-env-vars "NODE_ENV=production" \
+        --set-env-vars "TZ=Asia/Bangkok" \
+        --set-env-vars "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN" \
+        --set-env-vars "TIDB_HOST=$TIDB_HOST" \
+        --set-env-vars "TIDB_PORT=${TIDB_PORT:-4000}" \
+        --set-env-vars "TIDB_USER=$TIDB_USER" \
+        --set-env-vars "TIDB_PASSWORD=$TIDB_PASSWORD" \
+        --set-env-vars "TIDB_DATABASE=$TIDB_DATABASE" \
+        --set-env-vars "ADMIN_CHAT_ID=$ADMIN_CHAT_ID" \
+        --set-env-vars "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-$ADMIN_CHAT_ID}" \
+        --set-env-vars "CRON_SECRET=$CRON_SECRET" \
+        --set-env-vars "APP_URL=${APP_URL:-https://$SERVICE_NAME-$PROJECT_ID.a.run.app}" \
+        --set-env-vars "TIDB_ENABLE_SSL=true" \
+        --set-env-vars "LOG_LEVEL=INFO" \
+        --set-env-vars "LOG_TO_FILE=false"
 
     log_info "Service deployed successfully"
 }
