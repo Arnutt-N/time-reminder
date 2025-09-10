@@ -1,29 +1,21 @@
 /**
  * ตัวอย่างการเชื่อมต่อ TiDB Cloud Serverless สำหรับบอท Telegram
  * ไฟล์นี้แสดงวิธีการสร้างการเชื่อมต่อและฟังก์ชันพื้นฐานในการจัดการข้อมูลผู้ใช้
- * ปรับปรุงเพื่อแก้ไขปัญหา PID ใหม่โผล่ไม่รู้จบ
+ * ปรับปรุงเพื่อใช้ config.js สำหรับการตั้งค่าสภาพแวดล้อมต่างๆ
  */
 const { LOG_LEVELS, botLog, logError } = require("./logger.js")
 const mysql = require("mysql2/promise")
-const dotenv = require("dotenv")
 const fs = require("fs")
 const path = require("path")
-
-// tidb-connection.js - เพิ่มการนำเข้า dayjs
 const dayjs = require("dayjs")
 const utc = require("dayjs/plugin/utc")
 const timezone = require("dayjs/plugin/timezone")
+const config = require("./config") // นำเข้าไฟล์ config.js
 
 // ตั้งค่า Day.js
 dayjs.extend(utc)
 dayjs.extend(timezone)
-const THAI_TIMEZONE = "Asia/Bangkok"
-
-dotenv.config()
-
-// กำหนดค่าสภาพแวดล้อม
-const ENV = process.env.NODE_ENV || 'development';
-const DB_NAME = process.env.TIDB_DATABASE || (ENV === 'production' ? 'telegram_bot' : 'test');
+const THAI_TIMEZONE = config.timezone || "Asia/Bangkok"
 
 // เพิ่มตัวแปรสถานะเพื่อติดตามว่าฐานข้อมูลได้รับการเริ่มต้นแล้วหรือไม่
 let databaseInitialized = false
@@ -46,21 +38,23 @@ async function getConnection() {
       await initializeDatabase()
     }
 
+    // ใช้ค่าจาก config สำหรับการตั้งค่าการเชื่อมต่อ
     const options = {
-      host: process.env.TIDB_HOST || "127.0.0.1",
-      port: parseInt(process.env.TIDB_PORT || "4000"),
-      user: process.env.TIDB_USER || "root",
-      password: process.env.TIDB_PASSWORD || "",
-      database: process.env.TIDB_DATABASE || "telegram_bot",
-      ssl: {
-        minVersion: "TLSv1.2",
-        rejectUnauthorized: true,
-      },
-      supportBigNumbers: true,
-      enableKeepAlive: true,
-      dateStrings: true,
-      connectionLimit: 10,
-      timezone: "+07:00", // ตั้งค่า timezone เป็น GMT+7 (ประเทศไทย)
+      host: config.database.host,
+      port: config.database.port,
+      user: config.database.user,
+      password: config.database.password,
+      database: config.database.database,
+      supportBigNumbers: config.database.supportBigNumbers,
+      enableKeepAlive: config.database.enableKeepAlive,
+      dateStrings: config.database.dateStrings,
+      timezone: config.database.timezone,
+      ssl: config.database.ssl
+        ? {
+            minVersion: "TLSv1.2",
+            rejectUnauthorized: true,
+          }
+        : undefined,
     }
 
     botLog(LOG_LEVELS.INFO, "database", "🔄 กำลังเชื่อมต่อกับ TiDB Cloud...")
@@ -119,7 +113,7 @@ async function initializeDatabase() {
     botLog(
       LOG_LEVELS.INFO,
       "initializeDatabase",
-      `กำลังเริ่มต้นการเชื่อมต่อฐานข้อมูล ${DB_NAME} ในโหมด ${ENV} (PID: ${process.pid})`
+      "กำลังอยู่ในขั้นตอนการเริ่มต้นฐานข้อมูล กรุณารอสักครู่"
     )
 
     // รอให้การเริ่มต้นเสร็จสิ้น (ไม่เกิน 30 วินาที)
@@ -148,25 +142,27 @@ async function initializeDatabase() {
     botLog(
       LOG_LEVELS.INFO,
       "initializeDatabase",
-      "กำลังเริ่มต้นการเชื่อมต่อฐานข้อมูล (PID: " + process.pid + ")"
+      `กำลังเริ่มต้นการเชื่อมต่อฐานข้อมูล ${config.database.database} ในโหมด ${config.env} (PID: ${process.pid})`
     )
 
     while (retries > 0) {
       try {
+        // ตั้งค่าการเชื่อมต่อพื้นฐานโดยไม่ระบุชื่อฐานข้อมูล
         const rootOptions = {
-          host: process.env.TIDB_HOST || "127.0.0.1",
-          port: parseInt(process.env.TIDB_PORT || "4000"),
-          user: process.env.TIDB_USER || "root",
-          password: process.env.TIDB_PASSWORD || "",
-          ssl: {
-            minVersion: "TLSv1.2",
-            rejectUnauthorized: true,
-          },
-          supportBigNumbers: true,
-          enableKeepAlive: true,
-          dateStrings: true,
-          connectionLimit: 10,
-          timezone: "+07:00", // ตั้งค่า timezone เป็น GMT+7 (ประเทศไทย)
+          host: config.database.host,
+          port: config.database.port,
+          user: config.database.user,
+          password: config.database.password,
+          supportBigNumbers: config.database.supportBigNumbers,
+          enableKeepAlive: config.database.enableKeepAlive,
+          dateStrings: config.database.dateStrings,
+          timezone: config.database.timezone,
+          ssl: config.database.ssl
+            ? {
+                minVersion: "TLSv1.2",
+                rejectUnauthorized: true,
+              }
+            : undefined,
         }
 
         conn = await mysql.createConnection(rootOptions)
@@ -176,55 +172,58 @@ async function initializeDatabase() {
           "initializeDatabase",
           "เชื่อมต่อสำเร็จ กำลังสร้างฐานข้อมูล"
         )
-        // สร้างฐานข้อมูลและเลือกใช้งาน
-        await conn.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\`;`)
-        await conn.query(`USE \`${DB_NAME}\`;`)
+
+        // สร้างฐานข้อมูลตามที่กำหนดใน config
+        await conn.query(
+          `CREATE DATABASE IF NOT EXISTS \`${config.database.database}\`;`
+        )
+        await conn.query(`USE \`${config.database.database}\`;`)
 
         // สร้างตาราง users
         await conn.query(`
           CREATE TABLE IF NOT EXISTS users (
-        chat_id VARCHAR(50) PRIMARY KEY,
-        username VARCHAR(100),
-        first_name VARCHAR(100),
-        last_name VARCHAR(100),
-        date_added DATETIME DEFAULT CURRENT_TIMESTAMP,
-        is_subscribed BOOLEAN DEFAULT TRUE,
-        role VARCHAR(20) NOT NULL DEFAULT 'user'
-      )
-    `)
+            chat_id VARCHAR(50) PRIMARY KEY,
+            username VARCHAR(100),
+            first_name VARCHAR(100),
+            last_name VARCHAR(100),
+            date_added DATETIME DEFAULT CURRENT_TIMESTAMP,
+            is_subscribed BOOLEAN DEFAULT TRUE,
+            role VARCHAR(20) NOT NULL DEFAULT 'user'
+          )
+        `)
         await conn.query(`
-      CREATE INDEX IF NOT EXISTS idx_user_role ON users(role)
-    `)
+          CREATE INDEX IF NOT EXISTS idx_user_role ON users(role)
+        `)
 
         // ตรวจสอบว่ามีแอดมินอยู่แล้วหรือไม่
         const [adminCheck] = await conn.query(`
-      SELECT COUNT(*) as count FROM users WHERE role = 'admin'
-    `)
+          SELECT COUNT(*) as count FROM users WHERE role = 'admin'
+        `)
 
-        // ถ้ายังไม่มีแอดมิน ให้กำหนดแอดมินจาก ADMIN_CHAT_ID ใน .env
-        if (adminCheck[0].count === 0 && process.env.ADMIN_CHAT_ID) {
-          await connection.query(
+        // ถ้ายังไม่มีแอดมิน ให้กำหนดแอดมินจาก ADMIN_CHAT_ID ใน config
+        if (adminCheck[0].count === 0 && config.adminChatId) {
+          await conn.query(
             `
-        UPDATE users SET role = 'admin' WHERE chat_id = ?
-      `,
-            [process.env.ADMIN_CHAT_ID]
+              UPDATE users SET role = 'admin' WHERE chat_id = ?
+            `,
+            [config.adminChatId]
           )
 
           // หากไม่พบผู้ใช้ที่มี chat_id ตรงกับ ADMIN_CHAT_ID ให้สร้างใหม่
-          const [userCheck] = await connection.query(
+          const [userCheck] = await conn.query(
             `
-        SELECT COUNT(*) as count FROM users WHERE chat_id = ?
-      `,
-            [process.env.ADMIN_CHAT_ID]
+              SELECT COUNT(*) as count FROM users WHERE chat_id = ?
+            `,
+            [config.adminChatId]
           )
 
           if (userCheck[0].count === 0) {
-            await connection.query(
+            await conn.query(
               `
-          INSERT INTO users (chat_id, username, first_name, last_name, role)
-          VALUES (?, 'admin', 'Admin', 'User', 'admin')
-        `,
-              [process.env.ADMIN_CHAT_ID]
+                INSERT INTO users (chat_id, username, first_name, last_name, role)
+                VALUES (?, 'admin', 'Admin', 'User', 'admin')
+              `,
+              [config.adminChatId]
             )
           }
         }
@@ -243,8 +242,8 @@ async function initializeDatabase() {
         if (!connectionPool) {
           const poolOptions = {
             ...rootOptions,
-            database: DB_NAME,
-            connectionLimit: 20,
+            database: config.database.database,
+            connectionLimit: config.database.connectionLimit,
             waitForConnections: true,
             queueLimit: 0,
           }
@@ -253,7 +252,7 @@ async function initializeDatabase() {
           botLog(
             LOG_LEVELS.INFO,
             "initializeDatabase",
-            `สร้าง connection pool สำหรับ ${DB_NAME} สำเร็จ`
+            `สร้าง connection pool สำหรับ ${config.database.database} สำเร็จ (connectionLimit: ${config.database.connectionLimit})`
           )
         }
 
@@ -514,7 +513,8 @@ async function isUserSubscribed(chatId) {
 async function importHolidaysFromJson() {
   let conn
   try {
-    const HOLIDAYS_FILE = path.join(__dirname, "holidays.json")
+    const HOLIDAYS_FILE =
+      config.holidaysFile || path.join(__dirname, "holidays.json")
     if (fs.existsSync(HOLIDAYS_FILE)) {
       const data = JSON.parse(fs.readFileSync(HOLIDAYS_FILE, "utf8"))
 
@@ -675,7 +675,7 @@ async function deleteHoliday(date) {
   }
 }
 
-// เพิ่มฟังก์ชันค้นหาวันหยุดใน tidb-connection.js
+// เพิ่มฟังก์ชันค้นหาวันหยุด
 async function searchHolidays(keyword) {
   let conn
   try {

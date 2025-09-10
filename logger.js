@@ -1,17 +1,21 @@
 /**
  * logger.js - ระบบบันทึกล็อกสำหรับบอท Telegram
- * ปรับปรุงเพื่อให้สอดคล้องกับการแก้ไขปัญหา PID ใหม่
+ * ปรับปรุงเพื่อใช้งานร่วมกับ config.js
  */
 const dayjs = require("dayjs")
 const utc = require("dayjs/plugin/utc")
 const timezone = require("dayjs/plugin/timezone")
 const fs = require("fs")
 const path = require("path")
+const config = require("./config") // นำเข้า config
 
 // ตั้งค่า Day.js
 dayjs.extend(utc)
 dayjs.extend(timezone)
-const THAI_TIMEZONE = "Asia/Bangkok"
+const THAI_TIMEZONE = config.timezone || "Asia/Bangkok"
+
+// Cloud Run environment detection
+const isCloudRun = !!process.env.K_SERVICE
 
 // กำหนดระดับความสำคัญของล็อก
 const LOG_LEVELS = {
@@ -21,12 +25,17 @@ const LOG_LEVELS = {
   ERROR: 3,
 }
 
-// กำหนดระดับล็อกจาก environment
-const CURRENT_LOG_LEVEL =
-  process.env.NODE_ENV === "production" ? LOG_LEVELS.INFO : LOG_LEVELS.DEBUG
+// กำหนดระดับล็อกจาก config
+let CURRENT_LOG_LEVEL = LOG_LEVELS.INFO // ค่าเริ่มต้น
+// แปลงจาก string เป็น number
+if (config.logging && config.logging.level) {
+  if (LOG_LEVELS[config.logging.level] !== undefined) {
+    CURRENT_LOG_LEVEL = LOG_LEVELS[config.logging.level]
+  }
+}
 
-// พาธสำหรับบันทึกไฟล์ล็อก
-const LOG_DIR = process.env.LOG_DIR || path.join(__dirname, "logs")
+// พาธสำหรับบันทึกไฟล์ล็อกจาก config
+const LOG_DIR = config.logDir || path.join(__dirname, "logs")
 const ERROR_LOG_FILE = path.join(LOG_DIR, "error.log")
 const GENERAL_LOG_FILE = path.join(LOG_DIR, "bot.log")
 
@@ -50,6 +59,12 @@ let isWritingLog = false
 
 // เวลาล่าสุดที่เขียนล็อก
 let lastLogWrite = Date.now()
+
+// ตรวจสอบว่าควรเขียนล็อกลงไฟล์หรือไม่จาก config
+const WRITE_TO_FILE =
+  config.logging && config.logging.toFile !== undefined
+    ? config.logging.toFile
+    : true
 
 // ฟังก์ชันสำหรับเขียนล็อกจากบัฟเฟอร์ลงไฟล์
 function flushLogBuffer() {
@@ -98,9 +113,6 @@ setInterval(() => {
   }
 }, 1000)
 
-// ตรวจสอบว่าควรเขียนล็อกลงไฟล์หรือไม่
-const WRITE_TO_FILE = process.env.LOG_TO_FILE === "true"
-
 /**
  * ฟังก์ชันล็อกที่ปรับเปลี่ยนตามระดับความสำคัญ
  * @param {number} level - ระดับความสำคัญของล็อก (จาก LOG_LEVELS)
@@ -115,62 +127,95 @@ function botLog(level, context, message, data = null) {
       (key) => LOG_LEVELS[key] === level
     )
 
-    // เพิ่ม PID ในข้อความล็อก
-    let logMessage = `[${timestamp}] [PID:${process.pid}] [${levelStr}] [${context}] ${message}`
+    // Cloud Run structured JSON logging
+    if (isCloudRun) {
+      const structuredLog = {
+        timestamp: dayjs().tz(THAI_TIMEZONE).toISOString(),
+        severity: levelStr,
+        message: message,
+        context: context,
+        pid: process.pid,
+        service: process.env.K_SERVICE || "telegram-reminder-bot",
+        revision: process.env.K_REVISION,
+        region: process.env.GOOGLE_CLOUD_REGION || "unknown",
+        thai_time: timestamp,
+        ...(data && { data: data })
+      }
 
-    // เพิ่มข้อมูลเพิ่มเติม (ถ้ามี)
-    let dataStr = ""
-    if (data !== null) {
-      try {
-        if (typeof data === "object") {
-          dataStr = " " + JSON.stringify(data)
-        } else {
-          dataStr = " " + String(data)
+      // ใช้ console methods ตาม severity level สำหรับ Cloud Logging
+      switch (level) {
+        case LOG_LEVELS.DEBUG:
+          console.debug(JSON.stringify(structuredLog))
+          break
+        case LOG_LEVELS.INFO:
+          console.log(JSON.stringify(structuredLog))
+          break
+        case LOG_LEVELS.WARN:
+          console.warn(JSON.stringify(structuredLog))
+          break
+        case LOG_LEVELS.ERROR:
+          console.error(JSON.stringify(structuredLog))
+          break
+      }
+    } else {
+      // Development/Local logging format (เดิม)
+      // เพิ่ม PID ในข้อความล็อก
+      let logMessage = `[${timestamp}] [PID:${process.pid}] [${levelStr}] [${context}] ${message}`
+
+      // เพิ่มข้อมูลเพิ่มเติม (ถ้ามี)
+      let dataStr = ""
+      if (data !== null) {
+        try {
+          if (typeof data === "object") {
+            dataStr = " " + JSON.stringify(data)
+          } else {
+            dataStr = " " + String(data)
+          }
+        } catch (err) {
+          dataStr = " [ข้อมูลไม่สามารถแปลงเป็น JSON ได้]"
         }
-      } catch (err) {
-        dataStr = " [ข้อมูลไม่สามารถแปลงเป็น JSON ได้]"
-      }
-    }
-
-    // ล็อกไปที่คอนโซล
-    switch (level) {
-      case LOG_LEVELS.DEBUG:
-        data && console.debug(logMessage, data)
-        !data && console.debug(logMessage)
-        break
-      case LOG_LEVELS.INFO:
-        data && console.log(logMessage, data)
-        !data && console.log(logMessage)
-        break
-      case LOG_LEVELS.WARN:
-        data && console.warn(logMessage, data)
-        !data && console.warn(logMessage)
-        break
-      case LOG_LEVELS.ERROR:
-        data && console.error(logMessage, data)
-        !data && console.error(logMessage)
-        break
-    }
-
-    // ล็อกลงไฟล์ถ้าต้องการ
-    if (WRITE_TO_FILE) {
-      const fullLogMessage = logMessage + dataStr
-
-      if (level === LOG_LEVELS.ERROR) {
-        // เก็บล็อกข้อผิดพลาดในบัฟเฟอร์แยกต่างหาก
-        logBuffer.error.push(fullLogMessage)
       }
 
-      // เก็บล็อกทั่วไปในบัฟเฟอร์
-      logBuffer.general.push(fullLogMessage)
-
-      // เขียนล็อกทันทีถ้าเป็นข้อผิดพลาดร้ายแรง
-      if (level === LOG_LEVELS.ERROR && dataStr.includes("Error: EADDRINUSE")) {
-        flushLogBuffer()
+      // ล็อกไปที่คอนโซล
+      switch (level) {
+        case LOG_LEVELS.DEBUG:
+          data && console.debug(logMessage, data)
+          !data && console.debug(logMessage)
+          break
+        case LOG_LEVELS.INFO:
+          data && console.log(logMessage, data)
+          !data && console.log(logMessage)
+          break
+        case LOG_LEVELS.WARN:
+          data && console.warn(logMessage, data)
+          !data && console.warn(logMessage)
+          break
+        case LOG_LEVELS.ERROR:
+          data && console.error(logMessage, data)
+          !data && console.error(logMessage)
+          break
       }
-      // เขียนล็อกทันทีถ้าบัฟเฟอร์เต็ม
-      else if (logBuffer.general.length > 200 || logBuffer.error.length > 50) {
-        flushLogBuffer()
+
+      // ล็อกลงไฟล์ถ้าต้องการ (เฉพาะ development/local)
+      if (WRITE_TO_FILE) {
+        const fullLogMessage = logMessage + dataStr
+
+        if (level === LOG_LEVELS.ERROR) {
+          // เก็บล็อกข้อผิดพลาดในบัฟเฟอร์แยกต่างหาก
+          logBuffer.error.push(fullLogMessage)
+        }
+
+        // เก็บล็อกทั่วไปในบัฟเฟอร์
+        logBuffer.general.push(fullLogMessage)
+
+        // เขียนล็อกทันทีถ้าเป็นข้อผิดพลาดร้ายแรง
+        if (level === LOG_LEVELS.ERROR && dataStr.includes("Error: EADDRINUSE")) {
+          flushLogBuffer()
+        }
+        // เขียนล็อกทันทีถ้าบัฟเฟอร์เต็ม
+        else if (logBuffer.general.length > 200 || logBuffer.error.length > 50) {
+          flushLogBuffer()
+        }
       }
     }
   }
@@ -184,11 +229,13 @@ function botLog(level, context, message, data = null) {
 function logError(context, error) {
   botLog(LOG_LEVELS.ERROR, context, `${error.message}`)
 
-  // ล็อกสแตกเทรซเพิ่มเติมสำหรับการดีบัก
-  if (
-    process.env.NODE_ENV === "development" ||
-    process.env.LOG_STACK_TRACE === "true"
-  ) {
+  // ล็อกสแตกเทรซเพิ่มเติมสำหรับการดีบัก (ตรวจสอบจาก config)
+  const showStackTrace =
+    config.logging && config.logging.stackTrace !== undefined
+      ? config.logging.stackTrace
+      : process.env.NODE_ENV === "development"
+
+  if (showStackTrace) {
     console.error(error.stack)
 
     // บันทึกสแตกเทรซลงในไฟล์ด้วย

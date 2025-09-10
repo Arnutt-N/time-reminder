@@ -20,19 +20,19 @@ const express = require("express")
 const dayjs = require("dayjs")
 const utc = require("dayjs/plugin/utc")
 const timezone = require("dayjs/plugin/timezone")
-require("dotenv").config()
+const config = require("./config") // นำเข้า config
 
 // ตั้งค่า Day.js
 dayjs.extend(utc)
 dayjs.extend(timezone)
 const THAI_TIMEZONE = "Asia/Bangkok"
 
-// กำหนดตัวแปรสำคัญ
-const token = process.env.TELEGRAM_BOT_TOKEN
-const chatId = process.env.TELEGRAM_CHAT_ID
-const appUrl = process.env.APP_URL || "https://your-app-name.onrender.com"
-const port = process.env.PORT || 3000
-const HOLIDAYS_FILE = path.join(__dirname, "holidays.json")
+// กำหนดตัวแปรสำคัญจาก config
+const token = config.telegramBotToken;
+const chatId = config.telegramChatId;
+const appUrl = config.appUrl;
+const port = config.port;
+const HOLIDAYS_FILE = config.holidaysFile;
 
 // ตัวแปรสถานะการเริ่มต้น
 let botInitialized = false
@@ -572,31 +572,104 @@ app.get("/ping", (req, res) => {
   res.status(200).send("pong")
 })
 
-app.get("/health", (req, res) => {
+app.get("/health", async (req, res) => {
   try {
     const serverTimeInfo = getServerTimeInfo()
+    
+    // Test database connection
+    let databaseStatus = "disconnected"
+    try {
+      const dbConnection = await getConnection()
+      await dbConnection.query('SELECT 1')
+      await dbConnection.end()
+      databaseStatus = "connected"
+    } catch (dbError) {
+      databaseStatus = "failed"
+    }
+    
+    // Test Telegram API
+    let telegramApiStatus = "disconnected"
+    try {
+      const botInfo = await bot.getMe()
+      telegramApiStatus = botInfo ? "connected" : "failed"
+    } catch (telegramError) {
+      telegramApiStatus = "failed"
+    }
+    
+    // Check webhook status  
+    let webhookStatus = "inactive"
+    try {
+      const webhookInfo = await bot.getWebhookInfo()
+      webhookStatus = webhookInfo.url ? "active" : "inactive"
+    } catch (webhookError) {
+      webhookStatus = "failed"
+    }
 
     const healthData = {
       status: "ok",
+      platform: "google-cloud-run",
+      service: process.env.K_SERVICE,
+      revision: process.env.K_REVISION,
+      region: process.env.GOOGLE_CLOUD_REGION,
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
-      bot_initialized: botInitialized,
+      memory_limit: process.env.MEMORY_LIMIT || "256Mi",
+      cpu_limit: process.env.CPU_LIMIT || "0.25",
+      checks: {
+        bot_initialized: botInitialized,
+        database: databaseStatus,
+        telegram_api: telegramApiStatus,
+        webhook: webhookStatus,
+        cron_jobs: cronJobsInitialized || false,
+        timezone: dayjs().tz(THAI_TIMEZONE).format()
+      },
       server_time: {
         utc: serverTimeInfo.utcTime,
         thai: serverTimeInfo.thaiTime,
         offset: serverTimeInfo.offset,
       },
     }
-
-    botLog(LOG_LEVELS.DEBUG, "health", "Health check response", healthData)
+    
+    // Structured logging for Cloud Run
+    if (config.cloudRun.isCloudRun) {
+      console.log(JSON.stringify({
+        timestamp: new Date().toISOString(),
+        severity: 'INFO',
+        component: 'health-check',
+        message: 'Health check successful',
+        service: process.env.K_SERVICE,
+        revision: process.env.K_REVISION,
+        checks: healthData.checks
+      }))
+    } else {
+      botLog(LOG_LEVELS.DEBUG, "health", "Health check response", healthData)
+    }
+    
     res.status(200).json(healthData)
   } catch (error) {
     logError("health", error)
-    res.status(500).json({
+    
+    const errorData = {
       status: "error",
-      message: "Failed to get health information",
+      platform: "google-cloud-run",
+      service: process.env.K_SERVICE,
       error: error.message,
-    })
+      timestamp: new Date().toISOString()
+    }
+    
+    // Structured error logging for Cloud Run
+    if (config.cloudRun.isCloudRun) {
+      console.log(JSON.stringify({
+        timestamp: new Date().toISOString(),
+        severity: 'ERROR',
+        component: 'health-check', 
+        message: 'Health check failed',
+        error: error.message,
+        service: process.env.K_SERVICE
+      }))
+    }
+    
+    res.status(500).json(errorData)
   }
 })
 
@@ -649,6 +722,182 @@ app.get("/reset-webhook", async (req, res) => {
     res.status(500).send(`Error: ${error.message}`)
   }
 })
+
+// External Cron Endpoint for GitHub Actions
+app.post("/api/cron", async (req, res) => {
+  try {
+    // Verify authorization to prevent unauthorized triggers
+    const authHeader = req.headers.authorization
+    if (!authHeader || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+      botLog(LOG_LEVELS.WARN, "cron-endpoint", "Unauthorized cron request", {
+        ip: req.ip,
+        userAgent: req.get('user-agent')
+      })
+      return res.status(401).json({error: "Unauthorized"})
+    }
+    
+    const { type, time } = req.body
+    
+    // Validate request body
+    if (!type || !time) {
+      return res.status(400).json({error: "Missing required fields: type, time"})
+    }
+    
+    if (!['morning', 'afternoon', 'evening'].includes(type)) {
+      return res.status(400).json({error: "Invalid cron type. Must be: morning, afternoon, or evening"})
+    }
+    
+    botLog(LOG_LEVELS.INFO, "cron-trigger", `Received ${type} reminder trigger for ${time}`)
+    
+    // Route to appropriate reminder function
+    switch(type) {
+      case 'morning':
+        await sendMorningReminder()
+        break
+      case 'afternoon':
+        await sendAfternoonReminder()  
+        break
+      case 'evening':
+        await sendEveningReminder()
+        break
+      default:
+        return res.status(400).json({error: "Invalid cron type"})
+    }
+    
+    res.status(200).json({
+      success: true,
+      type: type,
+      time: time,
+      executed_at: new Date().toISOString(),
+      platform: "google-cloud-run"
+    })
+    
+  } catch (error) {
+    logError("cron-endpoint", error)
+    res.status(500).json({error: error.message})
+  }
+})
+
+// Helper functions for external cron triggers
+async function sendMorningReminder() {
+  try {
+    // Check for holidays
+    if (await isHoliday()) {
+      botLog(LOG_LEVELS.INFO, "sendMorningReminder", "วันนี้เป็นวันหยุด ข้ามการส่งข้อความเตือน")
+      return
+    }
+    
+    botLog(LOG_LEVELS.INFO, "sendMorningReminder", "กำลังส่งข้อความแจ้งเตือนตอนเช้า")
+    
+    const morningMessage = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
+    
+    // Send to group/channel if configured
+    if (chatId) {
+      try {
+        await bot.sendMessage(chatId, morningMessage)
+        botLog(LOG_LEVELS.INFO, "sendMorningReminder", "ส่งข้อความไปยังกลุ่มสำเร็จ")
+      } catch (err) {
+        logError("sendMorningReminder-group", err)
+      }
+    }
+    
+    // Send to individual subscribers
+    const subscribers = await getSubscribedUsers()
+    botLog(LOG_LEVELS.INFO, "sendMorningReminder", `กำลังส่งข้อความไปยังผู้ใช้ ${subscribers.length} คน`)
+    
+    for (const user of subscribers) {
+      try {
+        await bot.sendMessage(user.chatId, morningMessage)
+        botLog(LOG_LEVELS.DEBUG, "sendMorningReminder", `ส่งข้อความเช้าให้ ${user.chatId} สำเร็จ`)
+      } catch (error) {
+        logError("sendMorningReminder-user", error)
+      }
+    }
+  } catch (error) {
+    logError("sendMorningReminder", error)
+    throw error
+  }
+}
+
+async function sendAfternoonReminder() {
+  try {
+    // Check for holidays  
+    if (await isHoliday()) {
+      botLog(LOG_LEVELS.INFO, "sendAfternoonReminder", "วันนี้เป็นวันหยุด ข้ามการส่งข้อความเตือน")
+      return
+    }
+    
+    botLog(LOG_LEVELS.INFO, "sendAfternoonReminder", "กำลังส่งข้อความแจ้งเตือนตอนบ่าย")
+    
+    const afternoonMessage = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
+    
+    // Send to group/channel if configured
+    if (chatId) {
+      try {
+        await bot.sendMessage(chatId, afternoonMessage)
+        botLog(LOG_LEVELS.INFO, "sendAfternoonReminder", "ส่งข้อความไปยังกลุ่มสำเร็จ")
+      } catch (err) {
+        logError("sendAfternoonReminder-group", err)
+      }
+    }
+    
+    // Send to individual subscribers
+    const subscribers = await getSubscribedUsers()
+    botLog(LOG_LEVELS.INFO, "sendAfternoonReminder", `กำลังส่งข้อความไปยังผู้ใช้ ${subscribers.length} คน`)
+    
+    for (const user of subscribers) {
+      try {
+        await bot.sendMessage(user.chatId, afternoonMessage)
+        botLog(LOG_LEVELS.DEBUG, "sendAfternoonReminder", `ส่งข้อความบ่ายให้ ${user.chatId} สำเร็จ`)
+      } catch (error) {
+        logError("sendAfternoonReminder-user", error)
+      }
+    }
+  } catch (error) {
+    logError("sendAfternoonReminder", error)
+    throw error
+  }
+}
+
+async function sendEveningReminder() {
+  try {
+    // Check for holidays
+    if (await isHoliday()) {
+      botLog(LOG_LEVELS.INFO, "sendEveningReminder", "วันนี้เป็นวันหยุด ข้ามการส่งข้อความเตือน")
+      return
+    }
+    
+    botLog(LOG_LEVELS.INFO, "sendEveningReminder", "กำลังส่งข้อความแจ้งเตือนตอนเย็น")
+    
+    const eveningMessage = getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
+    
+    // Send to group/channel if configured
+    if (chatId) {
+      try {
+        await bot.sendMessage(chatId, eveningMessage)
+        botLog(LOG_LEVELS.INFO, "sendEveningReminder", "ส่งข้อความไปยังกลุ่มสำเร็จ")
+      } catch (err) {
+        logError("sendEveningReminder-group", err)
+      }
+    }
+    
+    // Send to individual subscribers
+    const subscribers = await getSubscribedUsers()
+    botLog(LOG_LEVELS.INFO, "sendEveningReminder", `กำลังส่งข้อความไปยังผู้ใช้ ${subscribers.length} คน`)
+    
+    for (const user of subscribers) {
+      try {
+        await bot.sendMessage(user.chatId, eveningMessage)
+        botLog(LOG_LEVELS.DEBUG, "sendEveningReminder", `ส่งข้อความเย็นให้ ${user.chatId} สำเร็จ`)
+      } catch (error) {
+        logError("sendEveningReminder-user", error)
+      }
+    }
+  } catch (error) {
+    logError("sendEveningReminder", error)
+    throw error
+  }
+}
 
 // ตั้งค่า cron jobs - ปรับปรุงให้ป้องกันการตั้งค่าซ้ำซ้อน
 function setupCronJobs() {
@@ -1228,6 +1477,11 @@ const COMMAND_PERMISSIONS = {
     description: "หยุดการทดสอบ",
     regex: /^\/stop_test$/,
   },
+  cron_job: {
+    permission: "admin",
+    description: "ทดสอบ cron job ในเวลาที่กำหนด เช่น /\u200Bcron... HH.mm",
+    regex: /^\/cron_job\s+(\d{1,2})\.(\d{2})$/,
+  },
   reset_webhook: {
     permission: "admin",
     description: "รีเซ็ต webhook (ใช้เมื่อบอทไม่ตอบสนอง)",
@@ -1567,6 +1821,10 @@ async function handleCommand(cmdName, msg, match) {
 
     case "list_admins":
       await handleListAdmins(msg)
+      break
+
+    case "cron_job":
+      await handleCronJob(msg, match)
       break
 
     default:
@@ -2236,6 +2494,100 @@ async function handleListAdmins(msg) {
     logError("list-admins", error)
     await bot.sendMessage(chatId, "❌ เกิดข้อผิดพลาดในการดึงรายชื่อแอดมิน")
   }
+}
+
+// เพิ่มฟังก์ชันจัดการคำสั่ง cron_job
+async function handleCronJob(msg, match) {
+  const chatId = msg.chat.id;
+  const hours = parseInt(match[1]);
+  const minutes = parseInt(match[2]);
+  
+  // ตรวจสอบความถูกต้องของเวลาที่รับเข้ามา
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    await bot.sendMessage(chatId, "⚠️ รูปแบบเวลาไม่ถูกต้อง กรุณาใช้ HH.mm (00.00 - 23.59)");
+    return;
+  }
+  
+  // แปลงเวลาไทย (UTC+7) เป็น UTC สำหรับตั้ง cron job
+  let utcHours = hours - 7;
+  if (utcHours < 0) utcHours += 24;
+  
+  // สร้าง cron expression
+  const cronExpression = `${minutes} ${utcHours} * * *`;
+  
+  // แสดงข้อมูลการตั้ง cron
+  const thaiTime = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')} น. (UTC+7)`;
+  const utcTime = `${utcHours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')} (UTC)`;
+  
+  await bot.sendMessage(
+    chatId, 
+    `🕒 กำลังตั้ง cron job ที่เวลา ${thaiTime}\n` +
+    `⏱️ เทียบเท่ากับเวลา ${utcTime}\n` +
+    `📋 Cron expression: ${cronExpression}\n\n` +
+    `รอสักครู่... ระบบจะส่งข้อความแจ้งเตือนเมื่อถึงเวลา`
+  );
+  
+  // คำนวณเวลาที่จะทำงาน
+  let scheduledTime = new Date();
+  scheduledTime.setHours(hours);
+  scheduledTime.setMinutes(minutes);
+  scheduledTime.setSeconds(0);
+  
+  // ถ้าเวลาที่กำหนดผ่านไปแล้วในวันนี้ ให้ใช้เวลาของวันพรุ่งนี้แทน
+  const now = new Date();
+  if (scheduledTime < now) {
+    scheduledTime.setDate(scheduledTime.getDate() + 1);
+  }
+  
+  const timeUntilExecution = scheduledTime.getTime() - now.getTime();
+  const minutesUntil = Math.round(timeUntilExecution / 60000);
+  
+  await bot.sendMessage(
+    chatId,
+    `⏳ การแจ้งเตือนจะทำงานในอีกประมาณ ${minutesUntil} นาที ` +
+    `(${scheduledTime.toLocaleTimeString('th-TH', { timeZone: 'Asia/Bangkok' })})`
+  );
+  
+  // สร้าง cron job แบบใช้ครั้งเดียว
+  const testCronJob = cron.schedule(cronExpression, async () => {
+    try {
+      // ส่งข้อความแจ้งเตือน
+      await bot.sendMessage(
+        chatId,
+        `🔔 แจ้งเตือน! ถึงเวลาที่คุณกำหนดไว้แล้ว: ${thaiTime}\n` +
+        `สำเร็จ! นี่คือการทดสอบการทำงานของ cron job ด้วยคำสั่ง /cron_job ${hours}.${minutes.toString().padStart(2, '0')}`
+      );
+      
+      botLog(
+        LOG_LEVELS.INFO,
+        "testCronJob",
+        `ส่งข้อความแจ้งเตือนการทดสอบ cron ไปยัง ${chatId} สำเร็จ (เวลา: ${thaiTime})`
+      );
+      
+      // หยุด cron job หลังจากทำงานเสร็จ
+      testCronJob.stop();
+    } catch (error) {
+      logError("testCronJob", error);
+      try {
+        await bot.sendMessage(
+          chatId,
+          "❌ เกิดข้อผิดพลาดในการส่งข้อความแจ้งเตือน กรุณาลองอีกครั้ง"
+        );
+      } catch (sendError) {
+        logError("testCronJob-sendError", sendError);
+      }
+      testCronJob.stop();
+    }
+  }, {
+    scheduled: true,
+    timezone: "UTC" // ต้องกำหนดเป็น UTC เพราะเราได้แปลงเวลาเป็น UTC แล้ว
+  });
+  
+  botLog(
+    LOG_LEVELS.INFO,
+    "command-cron_job",
+    `แอดมิน ${chatId} ตั้ง cron job ทดสอบที่เวลา ${thaiTime} (${cronExpression})`
+  );
 }
 
 // เพิ่มเส้นทางสำหรับทดสอบส่งข้อความ

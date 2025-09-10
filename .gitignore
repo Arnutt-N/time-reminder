@@ -1,4 +1,5 @@
 # ไฟล์ Environment variables
+env/
 .env
 .env.*
 .env.local
@@ -7,14 +8,13 @@
 .env.production.local
 
 # Logs
-logs
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 .pnpm-debug.log*
-bot.lock
 
 # Dependency directories
 node_modules/
@@ -80,7 +80,19 @@ Thumbs.db
 *.swp
 *.swo
 
-# test setup import check files
+# Production build
+dist/
+build/
+
+# Temporary files
+tmp/
+temp/
+
+# Bot specific
+bot.lock
+
+# copy test setup import check files
+copy/
 test*.js
 *test.js
 *.test.js
@@ -89,10 +101,16 @@ check*.js
 import*.js
 
 # other files
-package-lock.json
+# package-lock.json
 holidays.json
 index copy*.js
 index copy *.js
 * copy*.js
 * copy
 * copy *
+
+.claude/
+PRPs/
+examples/
+research/
+deploy/

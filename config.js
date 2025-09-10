@@ -1,15 +1,41 @@
 /**
  * config.js - ไฟล์กำหนดค่าคอนฟิกสำหรับแอปพลิเคชัน
  * แยกการตั้งค่าสำหรับสภาพแวดล้อมต่างๆ เช่น development, production
+ * ปรับปรุงให้ใช้งานกับ dotenv-flow
  */
-require("dotenv").config()
 const path = require("path")
+const dotenvFlow = require("dotenv-flow")
+
+// โหลดไฟล์ .env ตามสภาพแวดล้อม
+const envResult = dotenvFlow.config({
+  // เลือกโฟลเดอร์ที่มีไฟล์ .env (ถ้าอยู่ในโฟลเดอร์อื่น)
+  path: path.resolve(process.cwd(), 'env'), // เปลี่ยนเป็นโฟลเดอร์ที่คุณต้องการ
+  // การตั้งค่าเพิ่มเติม (ถ้าจำเป็น)
+  // default_node_env: 'development',
+  // silent: true,
+})
+
+if (envResult.error) {
+  console.error("Error loading .env files:", envResult.error)
+} else {
+  console.log(`Environment loaded: ${process.env.NODE_ENV || "development"}`)
+  // แสดงข้อมูลเพิ่มเติมในโหมด development
+  if (process.env.NODE_ENV === "development") {
+    console.log(`Using database: ${process.env.TIDB_DATABASE}`)
+    console.log(`Log level: ${process.env.LOG_LEVEL}`)
+  }
+}
 
 // กำหนดค่าเริ่มต้นสำหรับทุกสภาพแวดล้อม
 const defaultConfig = {
-  // ค่าทั่วไป
-  port: process.env.PORT || 3000,
-  appUrl: process.env.APP_URL || "http://localhost:3000",
+  // ค่าทั่วไป - Cloud Run uses PORT=8080 by default
+  port: process.env.PORT || 8080,
+  
+  // Auto-generate appUrl for Cloud Run or use provided
+  appUrl: process.env.APP_URL || 
+    (process.env.K_SERVICE 
+      ? `https://${process.env.K_SERVICE}-${process.env.GOOGLE_CLOUD_PROJECT}.a.run.app`
+      : "http://localhost:8080"),
 
   // Telegram Bot
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
@@ -18,6 +44,14 @@ const defaultConfig = {
 
   // ตั้งค่าเวลา
   timezone: "Asia/Bangkok",
+
+  // Cloud Run metadata
+  cloudRun: {
+    isCloudRun: !!process.env.K_SERVICE,
+    service: process.env.K_SERVICE,
+    revision: process.env.K_REVISION,
+    region: process.env.GOOGLE_CLOUD_REGION || 'us-central1'
+  },
 
   // ตั้งค่าไฟล์และพาธ
   holidaysFile: path.join(__dirname, "holidays.json"),
@@ -51,41 +85,34 @@ const defaultConfig = {
 const environments = {
   development: {
     database: {
-      database: process.env.TIDB_DATABASE || "test", // ใช้ฐานข้อมูล test สำหรับ development
+      connectionLimit: 5, // ลดจำนวน connection สำหรับ development
     },
     logging: {
       level: "DEBUG",
-      toFile: true,
-      stackTrace: true,
     },
   },
 
   production: {
     database: {
-      database: process.env.TIDB_DATABASE || "telegram_bot", // ใช้ฐานข้อมูลจริงสำหรับ production
       connectionLimit: 20, // เพิ่ม connection limit สำหรับ production
     },
     logging: {
       level: "INFO",
-      toFile: process.env.LOG_TO_FILE !== "false", // เปิดใช้งานบันทึกล็อกโดยค่าเริ่มต้น ยกเว้นระบุเป็น false
-      stackTrace: false,
     },
   },
 
   test: {
     database: {
-      database: "test",
+      connectionLimit: 2, // จำกัด connection สำหรับ test
     },
     logging: {
-      level: "DEBUG",
-      toFile: false,
+      toFile: false, // ไม่บันทึกล็อกลงไฟล์ในโหมด test
     },
   },
 }
 
 // ดึงสภาพแวดล้อมปัจจุบัน
 const currentEnv = process.env.NODE_ENV || "development"
-console.log(`กำลังโหลดการตั้งค่าสำหรับสภาพแวดล้อม: ${currentEnv}`)
 
 // รวมค่าตั้งต้นกับค่าเฉพาะตามสภาพแวดล้อม
 const envConfig = environments[currentEnv] || environments.development
@@ -125,5 +152,27 @@ config.isTest = currentEnv === "test"
 
 // เพิ่มข้อมูลสภาพแวดล้อมให้ config
 config.env = currentEnv
+
+// ตรวจสอบตัวแปรสำคัญในโหมด production
+if (config.isProduction) {
+  console.log("Running in PRODUCTION mode")
+
+  const requiredVars = [
+    "TELEGRAM_BOT_TOKEN",
+    "APP_URL",
+    "TIDB_HOST",
+    "TIDB_USER",
+    "TIDB_PASSWORD",
+  ]
+
+  const missing = requiredVars.filter((name) => !process.env[name])
+  if (missing.length > 0) {
+    console.warn(
+      `⚠️ Warning: Missing required environment variables: ${missing.join(
+        ", "
+      )}`
+    )
+  }
+}
 
 module.exports = config
