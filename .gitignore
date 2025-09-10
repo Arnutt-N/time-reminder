@@ -1,4 +1,4 @@
-# ไฟล์ Environment variables
+# ไฟล์ Environment variables - CRITICAL SECURITY
 env/
 .env
 .env.*
@@ -6,6 +6,17 @@ env/
 .env.development.local
 .env.test.local
 .env.production.local
+.env.production
+env/.env.production
+
+# Security files
+*.key
+*.pem
+*.p12
+*.pfx
+secrets.json
+service-account.json
+credentials.json
 
 # Logs
 logs/
@@ -113,4 +124,3 @@ index copy *.js
 PRPs/
 examples/
 research/
-deploy/
