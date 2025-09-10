@@ -148,18 +148,28 @@ deploy_service() {
         exit 1
     fi
     
-    # Build environment variables from current environment
-    ENV_VARS_FINAL="--set-env-vars NODE_ENV=production,TZ=Asia/Bangkok"
-    ENV_VARS_FINAL="$ENV_VARS_FINAL,TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN"
-    ENV_VARS_FINAL="$ENV_VARS_FINAL,TIDB_HOST=$TIDB_HOST"
-    ENV_VARS_FINAL="$ENV_VARS_FINAL,TIDB_PORT=${TIDB_PORT:-4000}"
-    ENV_VARS_FINAL="$ENV_VARS_FINAL,TIDB_USER=$TIDB_USER"
-    ENV_VARS_FINAL="$ENV_VARS_FINAL,TIDB_PASSWORD=$TIDB_PASSWORD"
-    ENV_VARS_FINAL="$ENV_VARS_FINAL,TIDB_DATABASE=$TIDB_DATABASE"
-    ENV_VARS_FINAL="$ENV_VARS_FINAL,ADMIN_CHAT_ID=$ADMIN_CHAT_ID"
-    ENV_VARS_FINAL="$ENV_VARS_FINAL,TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-$ADMIN_CHAT_ID}"
-    ENV_VARS_FINAL="$ENV_VARS_FINAL,CRON_SECRET=$CRON_SECRET"
-    ENV_VARS_FINAL="$ENV_VARS_FINAL,APP_URL=${APP_URL:-https://$SERVICE_NAME-$PROJECT_ID.a.run.app}"
+    # Build environment variables array to handle special characters properly
+    ENV_VARS_ARRAY=(
+        "NODE_ENV=production"
+        "TZ=Asia/Bangkok"
+        "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN"
+        "TIDB_HOST=$TIDB_HOST"
+        "TIDB_PORT=${TIDB_PORT:-4000}"
+        "TIDB_USER=$TIDB_USER"
+        "TIDB_PASSWORD=$TIDB_PASSWORD"
+        "TIDB_DATABASE=$TIDB_DATABASE"
+        "ADMIN_CHAT_ID=$ADMIN_CHAT_ID"
+        "TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-$ADMIN_CHAT_ID}"
+        "CRON_SECRET=$CRON_SECRET"
+        "APP_URL=${APP_URL:-https://$SERVICE_NAME-$PROJECT_ID.a.run.app}"
+        "TIDB_ENABLE_SSL=true"
+        "LOG_LEVEL=INFO"
+        "LOG_TO_FILE=false"
+    )
+    
+    # Join array elements with commas
+    ENV_VARS_JOINED=$(IFS=,; echo "${ENV_VARS_ARRAY[*]}")
+    ENV_VARS_FINAL="--set-env-vars $ENV_VARS_JOINED"
 
     # Deploy the service with environment variables
     gcloud run deploy $SERVICE_NAME \
@@ -174,8 +184,7 @@ deploy_service() {
         --min-instances 0 \
         --timeout 300 \
         --concurrency 80 \
-        $ENV_VARS_FINAL \
-        --set-env-vars TIDB_ENABLE_SSL=true,LOG_LEVEL=INFO,LOG_TO_FILE=false
+        $ENV_VARS_FINAL
 
     log_info "Service deployed successfully"
 }
