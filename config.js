@@ -57,11 +57,11 @@ const defaultConfig = {
   holidaysFile: path.join(__dirname, "holidays.json"),
   logDir: process.env.LOG_DIR || path.join(__dirname, "logs"),
 
-  // ฐานข้อมูล TiDB
+  // ฐานข้อมูล TiDB - ไม่ใช้ default value สำหรับ production
   database: {
-    host: process.env.TIDB_HOST || "127.0.0.1",
+    host: process.env.TIDB_HOST || (process.env.NODE_ENV === 'production' ? null : "127.0.0.1"),
     port: parseInt(process.env.TIDB_PORT || "4000"),
-    user: process.env.TIDB_USER || "root",
+    user: process.env.TIDB_USER || (process.env.NODE_ENV === 'production' ? null : "root"),
     password: process.env.TIDB_PASSWORD || "",
     database: process.env.TIDB_DATABASE || "telegram_bot",
     ssl: process.env.TIDB_ENABLE_SSL === "true",
@@ -167,11 +167,19 @@ if (config.isProduction) {
 
   const missing = requiredVars.filter((name) => !process.env[name])
   if (missing.length > 0) {
-    console.warn(
-      `⚠️ Warning: Missing required environment variables: ${missing.join(
+    console.error(
+      `❌ Error: Missing required environment variables: ${missing.join(
         ", "
       )}`
     )
+    console.error("Application cannot start without these variables.")
+    process.exit(1)
+  }
+
+  // ตรวจสอบค่า database config
+  if (!config.database.host) {
+    console.error("❌ Error: Database host is not configured")
+    process.exit(1)
   }
 }
 
