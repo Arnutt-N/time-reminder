@@ -33,6 +33,8 @@ const chatId = config.telegramChatId;
 const appUrl = config.appUrl;
 const port = config.port;
 const HOLIDAYS_FILE = config.holidaysFile;
+// optional security header for Telegram webhook
+const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || ""
 
 // ตัวแปรสถานะการเริ่มต้น
 let botInitialized = false
@@ -54,6 +56,11 @@ if (!chatId) {
 // สร้าง Express app
 const app = express()
 app.use(express.json())
+
+// root เพื่อกัน 404 เวลา health/manual open
+app.get("/", (_req, res) => {
+  res.status(200).send("OK - Telegram Reminder Bot")
+})
 
 // สร้าง instance ของ bot โดยไม่ใช้ polling
 const bot = new TelegramBot(token, { polling: false })
@@ -106,19 +113,17 @@ async function initializeApp() {
         .listen(port, async () => {
           try {
              // ค่อย ๆ ทำงานหนักภายหลังแบบไม่ kill โปรเซส
-+     holidaysData = loadHolidays();
-+     try { await initializeDatabase(); } catch(e){ logError('initializeDatabase', e); }
-            // ล้าง webhook เดิม
+            holidaysData = loadHolidays();
+            try { await initializeDatabase(); } catch(e){ logError('initializeDatabase', e); }
+            // ล้าง webhook เดิม แล้วตั้งใหม่ (แนบ secret หากมี)
             botLog(LOG_LEVELS.INFO, "initializeApp", "กำลังลบ webhook เดิม")
             await bot.deleteWebHook()
-
-            // ตั้งค่า webhook ใหม่
-            botLog(
-              LOG_LEVELS.INFO,
-              "initializeApp",
-              `กำลังตั้งค่า webhook ใหม่: ${appUrl}/bot${token}`
+            const _url = `${appUrl}/bot${token}`
+            botLog(LOG_LEVELS.INFO, "initializeApp", `กำลังตั้งค่า webhook ใหม่: ${_url}`)
+            const webhookResult = await bot.setWebHook(
+              _url,
+              WEBHOOK_SECRET ? { secret_token: WEBHOOK_SECRET } : undefined
             )
-            const webhookResult = await bot.setWebHook(`${appUrl}/bot${token}`)
 
             if (!webhookResult) {
               const errorMsg = "ไม่สามารถตั้งค่า webhook ได้"
@@ -633,21 +638,12 @@ app.get("/health", async (req, res) => {
       },
     }
     
-    // Structured logging for Cloud Run
-    if (config.cloudRun.isCloudRun) {
-      console.log(JSON.stringify({
-        timestamp: new Date().toISOString(),
-        severity: 'INFO',
-        component: 'health-check',
-        message: 'Health check successful',
-        service: process.env.K_SERVICE,
-        revision: process.env.K_REVISION,
-        checks: healthData.checks
-      }))
-    } else {
-      botLog(LOG_LEVELS.DEBUG, "health", "Health check response", healthData)
-    }
-    
+    // Structured logging for Cloud Run (single line payload)
+    console.log(JSON.stringify({
+      severity: 'INFO',
+      component: 'health-check',
+      ...healthData
+    }))
     res.status(200).json(healthData)
   } catch (error) {
     logError("health", error)
@@ -676,9 +672,17 @@ app.get("/health", async (req, res) => {
   }
 })
 
-// ตั้งค่า webhook สำหรับ Telegram
+// ตั้งค่า webhook พร้อมตรวจ Secret Header
 app.post(`/bot${token}`, (req, res) => {
   try {
+    // ตรวจ header ถ้าตั้งค่าไว้
+    if (WEBHOOK_SECRET) {
+      const header = req.get("X-Telegram-Bot-Api-Secret-Token")
+      if (!header || header !== WEBHOOK_SECRET) {
+        botLog(LOG_LEVELS.WARN, "webhook", "Unauthorized webhook (secret mismatch)")
+        return res.sendStatus(401)
+      }
+    }
     botLog(LOG_LEVELS.DEBUG, "webhook", "Received update from Telegram", {
       updateId: req.body.update_id,
       chatId: req.body.message?.chat?.id,
@@ -705,9 +709,15 @@ app.get("/webhook-info", async (req, res) => {
   }
 })
 
-// เส้นทางรีเซ็ต webhook
-app.get("/reset-webhook", async (req, res) => {
+// รีเซ็ต webhook (ต้องมี Authorization: Bearer <CRON_SECRET>)
+app.post("/reset-webhook", async (req, res) => {
   try {
+    const auth = req.headers.authorization || ""
+    const expected = `Bearer ${process.env.CRON_SECRET || ""}`
+    if (!process.env.CRON_SECRET || auth !== expected) {
+      return res.status(401).json({ error: "Unauthorized" })
+    }
+
     botLog(LOG_LEVELS.INFO, "resetWebhook", "Deleting webhook...")
     await bot.deleteWebHook()
 
@@ -716,10 +726,13 @@ app.get("/reset-webhook", async (req, res) => {
       "resetWebhook",
       `Setting new webhook to: ${appUrl}/bot${token}`
     )
-    const result = await bot.setWebHook(`${appUrl}/bot${token}`)
+    const result = await bot.setWebHook(
+      `${appUrl}/bot${token}`,
+      WEBHOOK_SECRET ? { secret_token: WEBHOOK_SECRET } : undefined
+    )
 
     botLog(LOG_LEVELS.INFO, "resetWebhook", "Webhook reset result:", result)
-    res.send(`Webhook reset successfully: ${result}`)
+    res.json({ ok: true, result })
   } catch (error) {
     logError("resetWebhook", error)
     res.status(500).send(`Error: ${error.message}`)
@@ -2329,7 +2342,10 @@ async function handleResetWebhook(msg) {
   await bot.deleteWebHook()
   botLog(LOG_LEVELS.INFO, "command-reset_webhook", `ลบ webhook เดิมสำเร็จ`)
 
-  const result = await bot.setWebHook(`${appUrl}/bot${token}`)
+  const result = await bot.setWebHook(
+    `${appUrl}/bot${token}`,
+    WEBHOOK_SECRET ? { secret_token: WEBHOOK_SECRET } : undefined
+  )
   botLog(
     LOG_LEVELS.INFO,
     "command-reset_webhook",
@@ -2608,12 +2624,12 @@ app.get("/test-message/:chatId", async (req, res) => {
 })
 
 // คำสั่งเริ่มการทดสอบ (สำหรับแอดมิน)
-function startTest(msg) {
+async function startTest(msg) {
   try {
     const chatId = msg.chat.id
 
     // ตรวจสอบสิทธิ์แอดมิน
-    if (!isAdmin(chatId)) {
+    if (!(await isAdmin(chatId))) {
       bot.sendMessage(chatId, "❌ เฉพาะแอดมินเท่านั้นที่ใช้คำสั่งนี้ได้!")
       botLog(
         LOG_LEVELS.WARN,
@@ -2667,12 +2683,12 @@ function startTest(msg) {
 }
 
 // คำสั่งหยุดการทดสอบ (สำหรับแอดมิน)
-function stopTest(msg) {
+async function stopTest(msg) {
   try {
     const chatId = msg.chat.id
 
     // ตรวจสอบสิทธิ์แอดมิน
-    if (!isAdmin(chatId)) {
+    if (!(await isAdmin(chatId))) {
       bot.sendMessage(chatId, "❌ เฉพาะแอดมินเท่านั้นที่ใช้คำสั่งนี้ได้!")
       botLog(
         LOG_LEVELS.WARN,
