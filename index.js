@@ -105,6 +105,9 @@ async function initializeApp() {
       app
         .listen(port, async () => {
           try {
+             // ค่อย ๆ ทำงานหนักภายหลังแบบไม่ kill โปรเซส
++     holidaysData = loadHolidays();
++     try { await initializeDatabase(); } catch(e){ logError('initializeDatabase', e); }
             // ล้าง webhook เดิม
             botLog(LOG_LEVELS.INFO, "initializeApp", "กำลังลบ webhook เดิม")
             await bot.deleteWebHook()
@@ -1515,7 +1518,7 @@ async function checkPermission(chatId, permission) {
   if (permission === "all") return true
 
   // ถ้าเป็นคำสั่งสำหรับแอดมิน ตรวจสอบว่าเป็นแอดมินหรือไม่
-  if (permission === "admin" && !isAdmin(chatId)) {
+  if (permission === "admin" && !(await isAdmin(chatId))) {
     await bot.sendMessage(
       chatId,
       "⛔ คำสั่งนี้สงวนไว้สำหรับผู้ดูแลระบบเท่านั้น"
@@ -1562,7 +1565,7 @@ function setupEventHandlers() {
     handlers.start = bot.onText(/^\/(start|help)$/, async (msg) => {
       try {
         const chatId = msg.chat.id
-        const isAdminUser = isAdmin(chatId)
+        const isAdminUser = await isAdmin(chatId)
         botLog(
           LOG_LEVELS.INFO,
           "command-start",

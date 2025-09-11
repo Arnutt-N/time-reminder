@@ -32,10 +32,7 @@ const defaultConfig = {
   port: process.env.PORT || 8080,
   
   // Auto-generate appUrl for Cloud Run or use provided
-  appUrl: process.env.APP_URL || 
-    (process.env.K_SERVICE 
-      ? `https://${process.env.K_SERVICE}-${process.env.GOOGLE_CLOUD_PROJECT}.a.run.app`
-      : "http://localhost:8080"),
+  appUrl: process.env.APP_URL || `http://localhost:${process.env.PORT || 8080}`,
 
   // Telegram Bot
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
