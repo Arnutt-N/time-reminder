@@ -2,234 +2,122 @@ name: Scheduled Telegram Reminders
 
 on:
   schedule:
-    # Morning reminder - 7:25 AM Thai time (00:25 UTC)
-    - cron: '25 0 * * 1-5'
-    # Morning message - 8:25 AM Thai time (01:25 UTC)  
-    - cron: '25 1 * * 1-5'
-    # Evening reminder - 3:25 PM Thai time (08:25 UTC)
-    - cron: '25 8 * * 1-5'
-    # Evening message - 4:25 PM Thai time (09:25 UTC)
-    - cron: '25 9 * * 1-5'
+    # Morning (Thai) -> UTC
+    - cron: '25 0 * * 1-5'   # 07:25 TH = 00:25 UTC
+    - cron: '25 1 * * 1-5'   # 08:25 TH = 01:25 UTC
+    - cron: '25 2 * * 1-5'   # 09:25 TH = 02:25 UTC
+    # Afternoon (Thai) -> UTC
+    - cron: '30 8 * * 1-5'   # 15:30 TH = 08:30 UTC
+    - cron: '30 9 * * 1-5'   # 16:30 TH = 09:30 UTC
+    - cron: '30 10 * * 1-5'  # 17:30 TH = 10:30 UTC
+  workflow_dispatch: {}
 
 jobs:
-  trigger-morning-reminder:
+
+  trigger-0725:
     if: github.event.schedule == '25 0 * * 1-5'
     runs-on: ubuntu-latest
-    name: Morning Reminder (7:25 AM Thai)
-    
+    name: Morning (07:25 TH)
+    env:
+      APP: ${{ secrets.CLOUD_RUN_URL }}
+      TOKEN: ${{ secrets.CRON_SECRET }}
     steps:
-      - name: Trigger Morning Reminder
+      - name: POST /api/cron
         run: |
-          response=$(curl -s -w "%{http_code}" -o response_body.txt \
+          response=$(curl -s -w "%{http_code}" -o body.txt \
             -X POST \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d '{"type":"morning","time":"07:25"}' \
-            ${{ secrets.CLOUD_RUN_URL }}/api/cron)
-          
-          echo "HTTP Response Code: $response"
-          
-          if [ "$response" -eq 200 ]; then
-            echo "✅ Morning reminder triggered successfully"
-            cat response_body.txt
-          else
-            echo "❌ Failed to trigger morning reminder"
-            cat response_body.txt
-            exit 1
-          fi
+            "$APP/api/cron")
+          echo "HTTP: $response"; test "$response" -ge 200 -a "$response" -lt 300
 
-      - name: Retry on failure
-        if: failure()
-        run: |
-          echo "🔄 Retrying morning reminder..."
-          sleep 30
-          response=$(curl -s -w "%{http_code}" -o response_body.txt \
-            -X POST \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            -H "Content-Type: application/json" \
-            -d '{"type":"morning","time":"07:25"}' \
-            ${{ secrets.CLOUD_RUN_URL }}/api/cron)
-          
-          if [ "$response" -eq 200 ]; then
-            echo "✅ Morning reminder retry succeeded"
-            cat response_body.txt
-          else
-            echo "❌ Morning reminder retry failed"
-            cat response_body.txt
-            exit 1
-          fi
-
-  trigger-afternoon-reminder:
+  trigger-0825:
     if: github.event.schedule == '25 1 * * 1-5'
     runs-on: ubuntu-latest
-    name: Afternoon Reminder (8:25 AM Thai)
-    
+    name: Morning (08:25 TH)
+    env:
+      APP: ${{ secrets.CLOUD_RUN_URL }}
+      TOKEN: ${{ secrets.CRON_SECRET }}
     steps:
-      - name: Trigger Afternoon Reminder
+      - name: POST /api/cron
         run: |
-          response=$(curl -s -w "%{http_code}" -o response_body.txt \
+          response=$(curl -s -w "%{http_code}" -o body.txt \
             -X POST \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"type":"afternoon","time":"08:25"}' \
-            ${{ secrets.CLOUD_RUN_URL }}/api/cron)
-          
-          echo "HTTP Response Code: $response"
-          
-          if [ "$response" -eq 200 ]; then
-            echo "✅ Afternoon reminder triggered successfully"
-            cat response_body.txt
-          else
-            echo "❌ Failed to trigger afternoon reminder"
-            cat response_body.txt
-            exit 1
-          fi
+            -d '{"type":"morning","time":"08:25"}' \
+            "$APP/api/cron")
+          echo "HTTP: $response"; test "$response" -ge 200 -a "$response" -lt 300
 
-      - name: Retry on failure
-        if: failure()
-        run: |
-          echo "🔄 Retrying afternoon reminder..."
-          sleep 30
-          response=$(curl -s -w "%{http_code}" -o response_body.txt \
-            -X POST \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            -H "Content-Type: application/json" \
-            -d '{"type":"afternoon","time":"08:25"}' \
-            ${{ secrets.CLOUD_RUN_URL }}/api/cron)
-          
-          if [ "$response" -eq 200 ]; then
-            echo "✅ Afternoon reminder retry succeeded"
-            cat response_body.txt
-          else
-            echo "❌ Afternoon reminder retry failed"
-            cat response_body.txt
-            exit 1
-          fi
-
-  trigger-evening-reminder:
-    if: github.event.schedule == '25 8 * * 1-5'
+  trigger-0925:
+    if: github.event.schedule == '25 2 * * 1-5'
     runs-on: ubuntu-latest
-    name: Evening Reminder (3:25 PM Thai)
-    
+    name: Morning (09:25 TH)
+    env:
+      APP: ${{ secrets.CLOUD_RUN_URL }}
+      TOKEN: ${{ secrets.CRON_SECRET }}
     steps:
-      - name: Trigger Evening Reminder
+      - name: POST /api/cron
         run: |
-          response=$(curl -s -w "%{http_code}" -o response_body.txt \
+          response=$(curl -s -w "%{http_code}" -o body.txt \
             -X POST \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"type":"evening","time":"15:25"}' \
-            ${{ secrets.CLOUD_RUN_URL }}/api/cron)
-          
-          echo "HTTP Response Code: $response"
-          
-          if [ "$response" -eq 200 ]; then
-            echo "✅ Evening reminder triggered successfully"
-            cat response_body.txt
-          else
-            echo "❌ Failed to trigger evening reminder"
-            cat response_body.txt
-            exit 1
-          fi
+            -d '{"type":"morning","time":"09:25"}' \
+            "$APP/api/cron")
+          echo "HTTP: $response"; test "$response" -ge 200 -a "$response" -lt 300
 
-      - name: Retry on failure
-        if: failure()
-        run: |
-          echo "🔄 Retrying evening reminder..."
-          sleep 30
-          response=$(curl -s -w "%{http_code}" -o response_body.txt \
-            -X POST \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            -H "Content-Type: application/json" \
-            -d '{"type":"evening","time":"15:25"}' \
-            ${{ secrets.CLOUD_RUN_URL }}/api/cron)
-          
-          if [ "$response" -eq 200 ]; then
-            echo "✅ Evening reminder retry succeeded"
-            cat response_body.txt
-          else
-            echo "❌ Evening reminder retry failed"
-            cat response_body.txt
-            exit 1
-          fi
-
-  trigger-evening-message:
-    if: github.event.schedule == '25 9 * * 1-5'
+  trigger-1530:
+    if: github.event.schedule == '30 8 * * 1-5'
     runs-on: ubuntu-latest
-    name: Evening Message (4:25 PM Thai)
-    
+    name: Afternoon (15:30 TH)
+    env:
+      APP: ${{ secrets.CLOUD_RUN_URL }}
+      TOKEN: ${{ secrets.CRON_SECRET }}
     steps:
-      - name: Trigger Evening Message
+      - name: POST /api/cron
         run: |
-          response=$(curl -s -w "%{http_code}" -o response_body.txt \
+          response=$(curl -s -w "%{http_code}" -o body.txt \
             -X POST \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"type":"evening","time":"16:25"}' \
-            ${{ secrets.CLOUD_RUN_URL }}/api/cron)
-          
-          echo "HTTP Response Code: $response"
-          
-          if [ "$response" -eq 200 ]; then
-            echo "✅ Evening message triggered successfully"
-            cat response_body.txt
-          else
-            echo "❌ Failed to trigger evening message"
-            cat response_body.txt
-            exit 1
-          fi
+            -d '{"type":"evening","time":"15:30"}' \
+            "$APP/api/cron")
+          echo "HTTP: $response"; test "$response" -ge 200 -a "$response" -lt 300
 
-      - name: Retry on failure
-        if: failure()
-        run: |
-          echo "🔄 Retrying evening message..."
-          sleep 30
-          response=$(curl -s -w "%{http_code}" -o response_body.txt \
-            -X POST \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            -H "Content-Type: application/json" \
-            -d '{"type":"evening","time":"16:25"}' \
-            ${{ secrets.CLOUD_RUN_URL }}/api/cron)
-          
-          if [ "$response" -eq 200 ]; then
-            echo "✅ Evening message retry succeeded"
-            cat response_body.txt
-          else
-            echo "❌ Evening message retry failed"
-            cat response_body.txt
-            exit 1
-          fi
-
-  # Manual trigger for testing
-  manual-trigger:
-    if: github.event_name == 'workflow_dispatch'
+  trigger-1630:
+    if: github.event.schedule == '30 9 * * 1-5'
     runs-on: ubuntu-latest
-    name: Manual Test Trigger
-    
+    name: Afternoon (16:30 TH)
+    env:
+      APP: ${{ secrets.CLOUD_RUN_URL }}
+      TOKEN: ${{ secrets.CRON_SECRET }}
     steps:
-      - name: Test Health Endpoint
+      - name: POST /api/cron
         run: |
-          echo "🔍 Testing Cloud Run health endpoint..."
-          curl -f ${{ secrets.CLOUD_RUN_URL }}/health
-          
-      - name: Test Cron Endpoint Authorization
-        run: |
-          echo "🔍 Testing cron endpoint authorization..."
-          response=$(curl -s -w "%{http_code}" -o response_body.txt \
+          response=$(curl -s -w "%{http_code}" -o body.txt \
             -X POST \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"type":"morning","time":"manual-test"}' \
-            ${{ secrets.CLOUD_RUN_URL }}/api/cron)
-          
-          echo "HTTP Response Code: $response"
-          cat response_body.txt
+            -d '{"type":"evening","time":"16:30"}' \
+            "$APP/api/cron")
+          echo "HTTP: $response"; test "$response" -ge 200 -a "$response" -lt 300
 
-# Allow manual workflow dispatch for testing
-on:
-  schedule:
-    - cron: '25 0 * * 1-5'
-    - cron: '25 1 * * 1-5'
-    - cron: '25 8 * * 1-5'
-    - cron: '25 9 * * 1-5'
-  workflow_dispatch: # Allow manual trigger
+  trigger-1730:
+    if: github.event.schedule == '30 10 * * 1-5'
+    runs-on: ubuntu-latest
+    name: Afternoon (17:30 TH)
+    env:
+      APP: ${{ secrets.CLOUD_RUN_URL }}
+      TOKEN: ${{ secrets.CRON_SECRET }}
+    steps:
+      - name: POST /api/cron
+        run: |
+          response=$(curl -s -w "%{http_code}" -o body.txt \
+            -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"type":"evening","time":"17:30"}' \
+            "$APP/api/cron")
+          echo "HTTP: $response"; test "$response" -ge 200 -a "$response" -lt 300
