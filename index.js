@@ -17,6 +17,7 @@ const cron = require("node-cron")
 const fs = require("fs")
 const path = require("path")
 const express = require("express")
+const rateLimit = require("express-rate-limit")
 const dayjs = require("dayjs")
 const utc = require("dayjs/plugin/utc")
 const timezone = require("dayjs/plugin/timezone")
@@ -55,7 +56,36 @@ if (!chatId) {
 
 // สร้าง Express app
 const app = express()
-app.use(express.json())
+
+// Security enhancements: JSON body limits to prevent DoS attacks
+app.use(express.json({ limit: '256kb' }))
+
+// Rate limiting for API endpoints
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: {
+    error: "Too many requests from this IP, please try again later.",
+    retry_after: "15 minutes"
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+
+const cronLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 10, // limit each IP to 10 requests per minute for cron endpoint
+  message: {
+    error: "Too many cron requests, please try again later.",
+    retry_after: "1 minute"  
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+
+// Apply rate limiting to specific endpoints
+app.use('/api/cron', cronLimiter)
+app.use('/api', apiLimiter)
 
 // root เพื่อกัน 404 เวลา health/manual open
 app.get("/", (_req, res) => {
@@ -119,7 +149,8 @@ async function initializeApp() {
             botLog(LOG_LEVELS.INFO, "initializeApp", "กำลังลบ webhook เดิม")
             await bot.deleteWebHook()
             const _url = `${appUrl}/bot${token}`
-            botLog(LOG_LEVELS.INFO, "initializeApp", `กำลังตั้งค่า webhook ใหม่: ${_url}`)
+            const maskedUrl = `${appUrl}/bot${token.substring(0, 10)}***MASKED***`
+            botLog(LOG_LEVELS.INFO, "initializeApp", `กำลังตั้งค่า webhook ใหม่: ${maskedUrl}`)
             const webhookResult = await bot.setWebHook(
               _url,
               WEBHOOK_SECRET ? { secret_token: WEBHOOK_SECRET } : undefined
@@ -137,10 +168,11 @@ async function initializeApp() {
               "initializeApp",
               `เซิร์ฟเวอร์ทำงานที่พอร์ต ${port}`
             )
+            const maskedWebhookUrl = `${appUrl}/bot${token.substring(0, 10)}***MASKED***`
             botLog(
               LOG_LEVELS.INFO,
               "initializeApp",
-              `ตั้งค่า webhook: ${appUrl}/bot${token}`
+              `ตั้งค่า webhook: ${maskedWebhookUrl}`
             )
 
             // ตั้งค่า event handlers
@@ -574,6 +606,36 @@ function getEveningMessage() {
   return `🌆 สวัสดีตอนเย็น! วันที่ ${getThaiDate()} \nขอบคุณสำหรับความทุ่มเทในวันนี้นะครับ/คะ 🙏`
 }
 
+// MarkdownV2 utility functions for safe message formatting
+function escapeMarkdownV2(text) {
+  if (typeof text !== 'string') {
+    return String(text)
+  }
+  
+  // MarkdownV2 special characters that need to be escaped
+  const specialChars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+  
+  let escaped = text
+  for (const char of specialChars) {
+    const regex = new RegExp('\\' + char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')
+    escaped = escaped.replace(regex, '\\' + char)
+  }
+  
+  return escaped
+}
+
+function formatMarkdownV2Bold(text) {
+  return `*${escapeMarkdownV2(text)}*`
+}
+
+function formatMarkdownV2Italic(text) {
+  return `_${escapeMarkdownV2(text)}_`
+}
+
+function formatMarkdownV2Code(text) {
+  return `\`${text.replace(/`/g, '\\`')}\``
+}
+
 // เพิ่ม endpoints สำหรับ health check
 app.get("/ping", (req, res) => {
   botLog(LOG_LEVELS.DEBUG, "ping", "Health check received")
@@ -721,10 +783,11 @@ app.post("/reset-webhook", async (req, res) => {
     botLog(LOG_LEVELS.INFO, "resetWebhook", "Deleting webhook...")
     await bot.deleteWebHook()
 
+    const maskedResetUrl = `${appUrl}/bot${token.substring(0, 10)}***MASKED***`
     botLog(
       LOG_LEVELS.INFO,
       "resetWebhook",
-      `Setting new webhook to: ${appUrl}/bot${token}`
+      `Setting new webhook to: ${maskedResetUrl}`
     )
     const result = await bot.setWebHook(
       `${appUrl}/bot${token}`,
@@ -757,6 +820,19 @@ app.post("/api/cron", async (req, res) => {
     // Validate request body
     if (!type || !time) {
       return res.status(400).json({error: "Missing required fields: type, time"})
+    }
+    
+    // Validate allowed times for 6-slot system
+    const allowedTimes = ["07:25", "08:25", "09:25", "15:30", "16:30", "17:30"]
+    if (!allowedTimes.includes(time)) {
+      botLog(LOG_LEVELS.WARN, "cron-endpoint", `Invalid time requested: ${time}`, { 
+        ip: req.ip, 
+        userAgent: req.get('user-agent') 
+      })
+      return res.status(400).json({
+        error: "Invalid time. Allowed times: " + allowedTimes.join(", "),
+        allowed_times: allowedTimes
+      })
     }
     
     if (!['morning', 'afternoon', 'evening'].includes(type)) {
@@ -1100,14 +1176,92 @@ function setupCronJobs() {
       }
     })
 
-    // เวลาไทย 15:25 น. = UTC 08:25 น. (จันทร์-ศุกร์)
+    // เวลาไทย 9:25 น. = UTC 02:25 น. (จันทร์-ศุกร์)
     botLog(
       LOG_LEVELS.INFO,
       "setupCronJobs",
-      "ตั้งค่า cron job แจ้งเตือนออกงาน 15:25 น. (08:25 UTC) - เฉพาะวันทำงาน"
+      "ตั้งค่า cron job ข้อความตอนเช้าครั้งที่ 3 9:25 น. (02:25 UTC) - เฉพาะวันทำงาน"
     )
 
-    const eveningReminder = cron.schedule("25 8 * * 1-5", async () => {
+    const thirdMorningMessage = cron.schedule("25 2 * * 1-5", async () => {
+      try {
+        if (await isHoliday()) {
+          botLog(
+            LOG_LEVELS.INFO,
+            "thirdMorningMessage",
+            "วันนี้เป็นวันหยุด ข้ามการส่งข้อความ"
+          )
+          return
+        }
+
+        botLog(
+          LOG_LEVELS.INFO,
+          "thirdMorningMessage",
+          `กำลังส่งข้อความตอนเช้าครั้งที่ 3 (9:25 น.) ${new Date().toISOString()}`
+        )
+
+        const morningMessage3 = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
+
+        // ส่งข้อความไปยังกลุ่ม/ช่อง
+        if (chatId) {
+          try {
+            await bot.sendMessage(chatId, morningMessage3)
+            botLog(
+              LOG_LEVELS.INFO,
+              "thirdMorningMessage",
+              "ส่งข้อความไปยังกลุ่ม/ช่องสำเร็จ"
+            )
+          } catch (err) {
+            logError("thirdMorningMessage-group", err)
+          }
+        }
+
+        // ส่งข้อความไปยังผู้ใช้แต่ละคน
+        const subscribers = await getSubscribedUsers()
+        botLog(
+          LOG_LEVELS.INFO,
+          "thirdMorningMessage",
+          `กำลังส่งข้อความไปยังผู้ใช้ ${subscribers.length} คน`
+        )
+
+        for (const user of subscribers) {
+          try {
+            await bot.sendMessage(user.chatId, morningMessage3)
+            botLog(
+              LOG_LEVELS.DEBUG,
+              "thirdMorningMessage",
+              `ส่งข้อความไปยังผู้ใช้ ${
+                user.username || user.firstName || user.chatId
+              } สำเร็จ`
+            )
+          } catch (err) {
+            logError("thirdMorningMessage-user", err)
+            botLog(
+              LOG_LEVELS.ERROR,
+              "thirdMorningMessage",
+              `ไม่สามารถส่งข้อความไปยังผู้ใช้ ${user.chatId} ได้`
+            )
+          }
+        }
+
+        botLog(
+          LOG_LEVELS.INFO,
+          "thirdMorningMessage",
+          "ส่งข้อความตอนเช้า 9:25 น. เสร็จสิ้น"
+        )
+      } catch (err) {
+        logError("thirdMorningMessage", err)
+      }
+    }, { timezone: 'Asia/Bangkok' })
+
+    // เวลาไทย 15:30 น. = UTC 08:30 น. (จันทร์-ศุกร์)
+    botLog(
+      LOG_LEVELS.INFO,
+      "setupCronJobs",
+      "ตั้งค่า cron job แจ้งเตือนออกงาน 15:30 น. (08:30 UTC) - เฉพาะวันทำงาน"
+    )
+
+    const eveningReminder = cron.schedule("30 8 * * 1-5", async () => {
       try {
         if (await isHoliday()) {
           botLog(
@@ -1121,7 +1275,7 @@ function setupCronJobs() {
         botLog(
           LOG_LEVELS.INFO,
           "eveningReminder",
-          `กำลังส่งข้อความแจ้งเตือนลงเวลาออกงาน (15:25 น.) ${new Date().toISOString()}`
+          `กำลังส่งข้อความแจ้งเตือนลงเวลาออกงาน (15:30 น.) ${new Date().toISOString()}`
         )
 
         const eveningCheckoutMessage =
@@ -1172,21 +1326,21 @@ function setupCronJobs() {
         botLog(
           LOG_LEVELS.INFO,
           "eveningReminder",
-          "ส่งข้อความแจ้งเตือน 15:25 น. เสร็จสิ้น"
+          "ส่งข้อความแจ้งเตือน 15:30 น. เสร็จสิ้น"
         )
       } catch (err) {
         logError("eveningReminder", err)
       }
     })
 
-    // เวลาไทย 16:25 น. = UTC 09:25 น. (จันทร์-ศุกร์)
+    // เวลาไทย 16:30 น. = UTC 09:30 น. (จันทร์-ศุกร์)
     botLog(
       LOG_LEVELS.INFO,
       "setupCronJobs",
-      "ตั้งค่า cron job ข้อความตอนเย็น 16:25 น. (09:25 UTC) - เฉพาะวันทำงาน"
+      "ตั้งค่า cron job ข้อความตอนเย็น 16:30 น. (09:30 UTC) - เฉพาะวันทำงาน"
     )
 
-    const eveningMessage = cron.schedule("25 9 * * 1-5", async () => {
+    const eveningMessage = cron.schedule("30 9 * * 1-5", async () => {
       try {
         if (await isHoliday()) {
           botLog(
@@ -1200,7 +1354,7 @@ function setupCronJobs() {
         botLog(
           LOG_LEVELS.INFO,
           "eveningMessage",
-          `กำลังส่งข้อความตอนเย็น (16:25 น.) ${new Date().toISOString()}`
+          `กำลังส่งข้อความตอนเย็น (16:30 น.) ${new Date().toISOString()}`
         )
 
         const eveningFullMessage =
@@ -1251,12 +1405,90 @@ function setupCronJobs() {
         botLog(
           LOG_LEVELS.INFO,
           "eveningMessage",
-          "ส่งข้อความตอนเย็น 16:25 น. เสร็จสิ้น"
+          "ส่งข้อความตอนเย็น 16:30 น. เสร็จสิ้น"
         )
       } catch (err) {
         logError("eveningMessage", err)
       }
     })
+
+    // เวลาไทย 17:30 น. = UTC 10:30 น. (จันทร์-ศุกร์)
+    botLog(
+      LOG_LEVELS.INFO,
+      "setupCronJobs",
+      "ตั้งค่า cron job ข้อความปิดงาน 17:30 น. (10:30 UTC) - เฉพาะวันทำงาน"
+    )
+
+    const lateEveningMessage = cron.schedule("30 10 * * 1-5", async () => {
+      try {
+        if (await isHoliday()) {
+          botLog(
+            LOG_LEVELS.INFO,
+            "lateEveningMessage",
+            "วันนี้เป็นวันหยุด ข้ามการส่งข้อความ"
+          )
+          return
+        }
+
+        botLog(
+          LOG_LEVELS.INFO,
+          "lateEveningMessage",
+          `กำลังส่งข้อความแจ้งเตือนปิดงาน (17:30 น.) ${new Date().toISOString()}`
+        )
+
+        const lateEveningMsg = getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
+
+        // ส่งข้อความไปยังกลุ่ม/ช่อง
+        if (chatId) {
+          try {
+            await bot.sendMessage(chatId, lateEveningMsg)
+            botLog(
+              LOG_LEVELS.INFO,
+              "lateEveningMessage",
+              "ส่งข้อความไปยังกลุ่ม/ช่องสำเร็จ"
+            )
+          } catch (err) {
+            logError("lateEveningMessage-group", err)
+          }
+        }
+
+        // ส่งข้อความไปยังผู้ใช้แต่ละคน
+        const subscribers = await getSubscribedUsers()
+        botLog(
+          LOG_LEVELS.INFO,
+          "lateEveningMessage",
+          `กำลังส่งข้อความไปยังผู้ใช้ ${subscribers.length} คน`
+        )
+
+        for (const user of subscribers) {
+          try {
+            await bot.sendMessage(user.chatId, lateEveningMsg)
+            botLog(
+              LOG_LEVELS.DEBUG,
+              "lateEveningMessage",
+              `ส่งข้อความไปยังผู้ใช้ ${
+                user.username || user.firstName || user.chatId
+              } สำเร็จ`
+            )
+          } catch (err) {
+            logError("lateEveningMessage-user", err)
+            botLog(
+              LOG_LEVELS.ERROR,
+              "lateEveningMessage",
+              `ไม่สามารถส่งข้อความไปยังผู้ใช้ ${user.chatId} ได้`
+            )
+          }
+        }
+
+        botLog(
+          LOG_LEVELS.INFO,
+          "lateEveningMessage",
+          "ส่งข้อความปิดงาน 17:30 น. เสร็จสิ้น"
+        )
+      } catch (err) {
+        logError("lateEveningMessage", err)
+      }
+    }, { timezone: 'Asia/Bangkok' })
 
     botLog(LOG_LEVELS.INFO, "setupCronJobs", "ตั้งค่า cron jobs เสร็จสิ้น")
 
@@ -1589,10 +1821,15 @@ function setupEventHandlers() {
 สวัสดีครับ/ค่ะ! 👋
 บอทนี้จะส่งข้อความแจ้งเตือนทุกวันในเวลา:
 
+🌅 **ช่วงเช้า**
 - ⏰ 7:25 น. (ข้อความตอนเช้า + แจ้งเตือนลงเวลาเข้างาน)
 - 🌞 8:25 น. (ข้อความตอนเช้า + แจ้งเตือนลงเวลาเข้างาน)
-- ⏰ 15:25 น. (ข้อความตอนเย็น + แจ้งเตือนลงเวลาออกจากงาน)
-- 🌆 16:25 น. (ข้อความตอนเย็น + แจ้งเตือนลงเวลาออกจากงาน)
+- ☀️ 9:25 น. (ข้อความตอนเช้า + แจ้งเตือนลงเวลาเข้างาน)
+
+🌆 **ช่วงบ่าย-เย็น**
+- 🕒 15:30 น. (ข้อความบ่าย + แจ้งเตือนลงเวลาออกจากงาน)
+- 🌇 16:30 น. (ข้อความเย็น + แจ้งเตือนลงเวลาออกจากงาน)
+- 🌃 17:30 น. (ข้อความปิดงาน + แจ้งเตือนลงเวลาออกจากงาน)
 
 หมายเหตุ: บอทจะไม่ส่งข้อความในวันเสาร์-อาทิตย์ และวันหยุดพิเศษ
 
@@ -2346,15 +2583,16 @@ async function handleResetWebhook(msg) {
     `${appUrl}/bot${token}`,
     WEBHOOK_SECRET ? { secret_token: WEBHOOK_SECRET } : undefined
   )
+  const maskedCommandUrl = `${appUrl}/bot${token.substring(0, 10)}***MASKED***`
   botLog(
     LOG_LEVELS.INFO,
     "command-reset_webhook",
-    `ตั้งค่า webhook ใหม่: ${appUrl}/bot${token} ผลลัพธ์: ${result}`
+    `ตั้งค่า webhook ใหม่: ${maskedCommandUrl} ผลลัพธ์: ${result}`
   )
 
   await bot.sendMessage(
     chatId,
-    `✅ รีเซ็ต webhook สำเร็จ\nWebhook URL: ${appUrl}/bot${token}`
+    `✅ รีเซ็ต webhook สำเร็จ\nWebhook URL: ${maskedCommandUrl}`
   )
 }
 

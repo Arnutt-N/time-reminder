@@ -4,13 +4,14 @@ A robust Telegram bot for sending scheduled reminders, optimized for Google Clou
 
 ## 🌟 Features
 
-- ⏰ **Scheduled Reminders**: Automated reminders via GitHub Actions cron jobs
+- ⏰ **6-Time Optimized Scheduling**: Morning (07:25, 08:25, 09:25) and Afternoon (15:30, 16:30, 17:30) Thai time
 - 🇹🇭 **Thai Timezone Support**: Full Asia/Bangkok timezone handling
-- 📱 **Telegram Integration**: Rich bot interactions and notifications
-- 🗄️ **TiDB Cloud**: Serverless database with SSL security
+- 📱 **Telegram Integration**: Rich bot interactions with subscription management and admin commands
+- 🗄️ **TiDB Cloud**: Serverless database with SSL security and connection pooling
 - ☁️ **Google Cloud Run**: Serverless deployment with 99.95% SLA
 - 📊 **Structured Logging**: Cloud Operations compatible JSON logs
-- 🔒 **Security**: Authentication for cron endpoints and secure database connections
+- 🔒 **Enhanced Security**: Rate limiting (100/15min general, 10/1min cron), Bearer token auth, JSON body limits (256KB)
+- 🛡️ **Security Enhancements**: Token masking, time validation, comprehensive input sanitization
 - 🆓 **Free Tier Friendly**: Designed to run within free tier limits
 
 ## 🚀 Quick Start
@@ -104,10 +105,9 @@ gcloud run services describe telegram-reminder-bot \
    - `CRON_SECRET`: The secret from your .env.production file
 
 3. The GitHub Actions workflow (`.github/workflows/scheduled-reminders.yml`) will automatically:
-   - Send morning reminder at 7:25 AM Thai time
-   - Send afternoon message at 8:25 AM Thai time
-   - Send evening reminder at 3:25 PM Thai time
-   - Send evening message at 4:25 PM Thai time
+   - Send morning reminders at 7:25, 8:25, and 9:25 AM Thai time
+   - Send afternoon reminders at 3:30, 4:30, and 5:30 PM Thai time
+   - 6-time optimized scheduling system for better coverage
 
 ## 📋 Architecture
 
@@ -177,15 +177,19 @@ The application supports multiple environment files in the `env/` directory:
 ### Health Checks
 
 - **Health Endpoint**: `GET /health`
-- **Validation**: Database, Telegram API, webhook status
+- **Validation**: Database connection, Telegram API, webhook status, cron job status
 - **Cloud Run Metadata**: Service, revision, region information
+- **6-Time Schedule Status**: All cron jobs (07:25, 08:25, 09:25, 15:30, 16:30, 17:30)
 
-### Logging
+### Enhanced Logging
 
 - **Development**: Human-readable format with file logging
 - **Production**: Structured JSON for Cloud Operations
-- **Thai Timezone**: All timestamps in Asia/Bangkok
+- **Thai Timezone**: All timestamps in Asia/Bangkok timezone
 - **Log Levels**: DEBUG, INFO, WARN, ERROR
+- **Security Logging**: Token masking, rate limiting alerts, validation failures
+- **Cron Logging**: Detailed execution logs for all 6 scheduled times
+- **MarkdownV2 Support**: Proper message formatting with escape handling
 
 ### Viewing Logs
 
@@ -208,9 +212,11 @@ gcloud logs read "resource.type=cloud_run_revision AND severity>=ERROR"
 |----------|-------------|---------|
 | `TELEGRAM_BOT_TOKEN` | Bot API token from @BotFather | `123456789:ABC...` |
 | `TELEGRAM_CHAT_ID` | Target chat for notifications | `-1001234567890` |
+| `ADMIN_CHAT_ID` | Admin chat for notifications | `123456789` |
 | `TIDB_HOST` | TiDB Cloud serverless endpoint | `gateway01.ap-southeast-1...` |
 | `TIDB_USER` | Database username | `username.root` |
 | `TIDB_PASSWORD` | Database password | `your_password` |
+| `TIDB_DATABASE` | Database name | `telegram_bot` |
 | `CRON_SECRET` | Authentication for cron endpoints | `random_32_char_string` |
 
 ### Optional Environment Variables
@@ -226,18 +232,30 @@ gcloud logs read "resource.type=cloud_run_revision AND severity>=ERROR"
 
 ## 🔒 Security
 
-### Authentication
+### Enhanced Security Features
 
-- **Cron Endpoints**: Bearer token authentication
-- **Database**: SSL/TLS encrypted connections
-- **Secrets**: Environment variable isolation
+- **Rate Limiting**: 100 requests per 15 minutes (general), 10 requests per minute (cron endpoints)
+- **Bearer Token Authentication**: Secure API endpoint access with token masking in logs
+- **Input Validation**: Comprehensive time format validation (07:25, 08:25, 09:25, 15:30, 16:30, 17:30)
+- **Request Size Limits**: JSON body limited to 256KB to prevent abuse
+- **Database Security**: SSL/TLS encrypted connections with connection pooling
+- **Token Security**: Automatic token masking in all log outputs
+- **Webhook Validation**: Secure webhook handling with comprehensive error logging
+
+### API Endpoints Security
+
+- **`/api/cron`**: Protected by Bearer token authentication and rate limiting (10/min)
+- **`/health`**: Public endpoint for service monitoring
+- **`/api/*`**: General API rate limiting (100 per 15 minutes)
 
 ### Best Practices
 
-- Rotate secrets regularly
-- Monitor access logs
-- Use principle of least privilege
-- Enable audit logging
+- Rotate secrets regularly (especially CRON_SECRET)
+- Monitor access logs for suspicious activity
+- Use principle of least privilege for database access
+- Enable audit logging for all API endpoints
+- Validate all time parameters against allowed values
+- Implement comprehensive error handling with security logging
 
 ## 🚨 Troubleshooting
 
@@ -266,16 +284,25 @@ node test-tidb.js
 2. Check GitHub Actions workflow runs
 3. Validate CRON_SECRET matches
 4. Confirm Cloud Run service is accessible
+5. Verify time format in API requests (must match: 07:25, 08:25, 09:25, 15:30, 16:30, 17:30)
+6. Check rate limiting (max 10 requests per minute for cron endpoint)
 
 #### Missing Reminders
 1. Check GitHub Actions execution logs
 2. Verify Thai timezone calculations
 3. Test cron endpoint manually:
 ```bash
+# Morning reminders
 curl -X POST https://your-service-url.a.run.app/api/cron \
   -H "Authorization: Bearer YOUR_CRON_SECRET" \
   -H "Content-Type: application/json" \
   -d '{"type":"morning","time":"07:25"}'
+
+# Afternoon reminders
+curl -X POST https://your-service-url.a.run.app/api/cron \
+  -H "Authorization: Bearer YOUR_CRON_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"afternoon","time":"15:30"}'
 ```
 
 ### Getting Help
@@ -295,7 +322,7 @@ curl -X POST https://your-service-url.a.run.app/api/cron \
 
 ### Usage Estimates
 
-- **4 daily reminders × 30 days = 120 requests/month**
+- **6 daily reminders × 30 days = 180 requests/month**
 - **Well within all free tier limits**
 - **Estimated cost: $0/month**
 
@@ -313,17 +340,22 @@ If migrating from Render, the key differences:
 
 The application is designed to scale automatically:
 
-- **Requests**: Up to 2M/month on free tier
-- **Instances**: 0-10 auto-scaling
-- **Memory**: 256Mi per instance
-- **Concurrent**: 80 requests per instance
+- **Requests**: Up to 2M/month on free tier (6 daily reminders = 180/month)
+- **Instances**: 0-10 auto-scaling with health monitoring
+- **Memory**: 256Mi per instance with connection pooling
+- **Concurrent**: 80 requests per instance with rate limiting protection
+- **Security**: Built-in rate limiting and input validation for protection
 
 ## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Test locally with `npm run dev`
-4. Submit a pull request
+4. Test database connectivity with `npm run check-env`
+5. Validate environment configuration
+6. Test all 6 cron endpoints (07:25, 08:25, 09:25, 15:30, 16:30, 17:30)
+7. Verify rate limiting and security features
+8. Submit a pull request with comprehensive testing
 
 ## 📄 License
 

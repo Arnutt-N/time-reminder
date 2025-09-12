@@ -1,20 +1,28 @@
 # INITIAL PROJECT OVERVIEW
 
-## FEATURE:
+## FEATURES:
 
-- Telegram reminder bot with TiDB Cloud Serverless database integration
-- Multi-environment configuration system using dotenv-flow
-- User subscription management and holiday data management
-- Cron-based scheduling system for automated reminders
-- Express.js health check endpoint for monitoring
+### Core Functionality
+- **6-Time Optimized Scheduling System**: Morning (07:25, 08:25, 09:25) and Afternoon (15:30, 16:30, 17:30) Thai time
+- **Telegram Bot Integration**: Rich bot interactions with subscription management and admin commands  
+- **TiDB Cloud Serverless**: Database backend with SSL/TLS security and connection pooling
+- **Multi-environment Configuration**: Environment-specific settings using dotenv-flow
+- **User & Holiday Management**: Subscription tracking and Thai holiday data integration
+
+### Advanced Features  
+- **External Cron API**: `/api/cron` endpoint for GitHub Actions integration with Bearer token authentication
+- **Security Enhancements**: Rate limiting (100/15min general, 10/1min cron), JSON body limits (256KB), token masking
+- **Comprehensive Health Monitoring**: Multiple health check endpoints with service status validation
+- **Thai Timezone Support**: Consistent Asia/Bangkok timezone handling throughout application
+- **Express.js API Server**: RESTful endpoints with authentication and monitoring capabilities
 
 ## COMPONENTS:
 
 ### Core Application Files:
-- `index.js` - Main application entry point with bot initialization and cron scheduling
-- `config.js` - Environment-aware configuration management using dotenv-flow
-- `tidb-connection.js` - Database layer with connection pooling and data operations
-- `logger.js` - Winston-based logging system with Thai timezone support
+- **`index.js`** - Main application entry point with 6-time cron scheduling system, Express server, and Telegram bot initialization
+- **`config.js`** - Environment-aware configuration management using dotenv-flow with multi-environment support
+- **`tidb-connection.js`** - Database layer with TiDB Cloud Serverless integration, connection pooling, and CRUD operations
+- **`logger.js`** - Winston-based structured logging system with Thai timezone support and environment-specific formatting
 
 ### Configuration:
 - `env/` folder contains environment-specific configuration files:

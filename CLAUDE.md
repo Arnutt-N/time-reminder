@@ -66,9 +66,11 @@ This is a Telegram reminder bot (`telegram-reminder-bot`) that sends scheduled n
 - Import/export functionality for holiday data
 
 **Scheduling System**
-- Node-cron based reminder scheduling
-- Thai timezone (Asia/Bangkok) support
-- Configurable cron job management
+- Node-cron based reminder scheduling with 6-time optimized system
+- Morning slots: 07:25, 08:25, 09:25 Thai time
+- Afternoon slots: 15:30, 16:30, 17:30 Thai time  
+- Thai timezone (Asia/Bangkok) support with consistency throughout
+- External API cron trigger support via `/api/cron` endpoint
 
 ## Environment Configuration
 
@@ -83,6 +85,8 @@ The application uses environment-specific configuration files in the `env/` dire
 - `TELEGRAM_CHAT_ID` - Default chat ID for notifications
 - `TIDB_HOST`, `TIDB_PORT`, `TIDB_USER`, `TIDB_PASSWORD`, `TIDB_DATABASE` - TiDB connection details
 - `NODE_ENV` - Environment mode (development/production/test)
+- `CRON_SECRET` - Bearer token for external cron API endpoint authentication
+- `TELEGRAM_WEBHOOK_SECRET` - Optional webhook secret for additional security
 
 ## Database Schema
 
@@ -117,3 +121,57 @@ The application includes a Dockerfile configured for:
 - Multiple test files for different components
 - Environment-specific test configuration
 - Database connection and SQL operation testing
+
+### Security Features
+- Rate limiting on API endpoints (100 req/15min general, 10 req/1min cron)
+- JSON body size limits (256KB) to prevent DoS attacks
+- Bearer token authentication for `/api/cron` endpoint
+- Enhanced webhook validation with secret token support
+- Token masking in logs to prevent credential exposure
+- Time validation for cron requests (6-slot allowlist)
+
+### API Endpoints
+- `GET /` - Basic health check
+- `GET /health` - Comprehensive health check with service status
+- `GET /ping` - Simple ping endpoint  
+- `POST /api/cron` - External cron trigger (authenticated)
+- `GET /webhook-info` - Telegram webhook information
+- `POST /reset-webhook` - Reset Telegram webhook (admin)
+- `POST /bot{token}` - Telegram webhook endpoint
+
+### Current Cron Schedule (6-Time System)
+The bot now operates on an optimized 6-time notification system:
+
+**Morning Reminders (Thai Time):**
+- 07:25 (00:25 UTC) - First morning reminder + check-in alert
+- 08:25 (01:25 UTC) - Second morning message + check-in alert  
+- 09:25 (02:25 UTC) - Third morning message + check-in alert
+
+**Afternoon/Evening Reminders (Thai Time):**
+- 15:30 (08:30 UTC) - Afternoon reminder + check-out alert
+- 16:30 (09:30 UTC) - Evening message + check-out alert
+- 17:30 (10:30 UTC) - Late evening wrap-up + check-out alert
+
+All cron jobs include:
+- Holiday checking with automatic skip functionality
+- User subscription validation
+- Thai timezone consistency (Asia/Bangkok)
+- Comprehensive error logging
+- Graceful error handling with database connection pooling
+
+### Integration with GitHub Actions
+The `/api/cron` endpoint accepts external triggers with:
+- Bearer token authentication using `CRON_SECRET`
+- Time validation against 6-slot allowlist: ["07:25", "08:25", "09:25", "15:30", "16:30", "17:30"]
+- Type validation (morning/afternoon/evening)
+- Rate limiting protection (10 requests per minute)
+- Comprehensive request logging with IP tracking
+
+### Dependencies
+- `express-rate-limit` - API rate limiting middleware
+- `node-telegram-bot-api` - Telegram Bot API integration
+- `node-cron` - Cron job scheduling with timezone support
+- `mysql2` - TiDB Cloud Serverless database connectivity
+- `winston` - Structured logging with Thai timezone support
+- `dayjs` - Date/time handling with timezone plugins
+- `dotenv-flow` - Environment configuration management
