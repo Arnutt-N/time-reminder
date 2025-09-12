@@ -33,21 +33,21 @@ cp .env.production.example .env.production
 2. Fill in your configuration values:
 ```bash
 # Get Telegram bot token from @BotFather
-TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxyz
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 
 # Get chat ID by messaging your bot and visiting:
 # https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
-TELEGRAM_CHAT_ID=-1001234567890
-ADMIN_CHAT_ID=123456789
+TELEGRAM_CHAT_ID=your_telegram_chat_id_here
+ADMIN_CHAT_ID=your_admin_chat_id_here
 
 # TiDB Cloud Serverless connection (free tier)
-TIDB_HOST=gateway01.ap-southeast-1.prod.aws.tidbcloud.com
-TIDB_USER=your_username
-TIDB_PASSWORD=your_password
+TIDB_HOST=your_tidb_host_here
+TIDB_USER=your_tidb_username
+TIDB_PASSWORD=your_secure_password
 TIDB_DATABASE=telegram_bot
 
 # Generate with: openssl rand -hex 32
-CRON_SECRET=your_32_character_random_string_here
+CRON_SECRET=your_random_secret_string_here
 ```
 
 ### 2. Deploy to Google Cloud Run
@@ -210,14 +210,14 @@ gcloud logs read "resource.type=cloud_run_revision AND severity>=ERROR"
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `TELEGRAM_BOT_TOKEN` | Bot API token from @BotFather | `123456789:ABC...` |
-| `TELEGRAM_CHAT_ID` | Target chat for notifications | `-1001234567890` |
-| `ADMIN_CHAT_ID` | Admin chat for notifications | `123456789` |
-| `TIDB_HOST` | TiDB Cloud serverless endpoint | `gateway01.ap-southeast-1...` |
-| `TIDB_USER` | Database username | `username.root` |
-| `TIDB_PASSWORD` | Database password | `your_password` |
+| `TELEGRAM_BOT_TOKEN` | Bot API token from @BotFather | `your_bot_token` |
+| `TELEGRAM_CHAT_ID` | Target chat for notifications | `your_chat_id` |
+| `ADMIN_CHAT_ID` | Admin chat for notifications | `your_admin_id` |
+| `TIDB_HOST` | TiDB Cloud serverless endpoint | `your_tidb_host` |
+| `TIDB_USER` | Database username | `your_tidb_username` |
+| `TIDB_PASSWORD` | Database password | `your_secure_password` |
 | `TIDB_DATABASE` | Database name | `telegram_bot` |
-| `CRON_SECRET` | Authentication for cron endpoints | `random_32_char_string` |
+| `CRON_SECRET` | Authentication for cron endpoints | `your_random_secret` |
 
 ### Optional Environment Variables
 
