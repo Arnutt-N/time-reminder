@@ -1,11 +1,11 @@
-# Cloud Build configuration for Telegram Reminder Bot (Optimized)
-# - Builds and pushes the container image.
-# - Deploys to Cloud Run in a single step and captures the service URL.
-# - Uses the captured URL to set the Telegram webhook externally.
-# - Uses the captured URL for a final health check.
+# Cloud Build configuration for Telegram Reminder Bot (Final Version)
+# - Deploys the service first to obtain a URL.
+# - Updates the service with its own URL as an environment variable.
+# - Sets the Telegram webhook.
+# - Performs a final health check on the stable service.
 
 steps:
-  # 1) Build image
+  # 1) Build image (No changes)
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-image'
     args:
@@ -18,7 +18,7 @@ steps:
     env:
       - 'DOCKER_BUILDKIT=1'
 
-  # 2) Push image
+  # 2) Push image (No changes)
   - name: 'gcr.io/cloud-builders/docker'
     id: 'push-image'
     args:
@@ -27,42 +27,72 @@ steps:
       - 'gcr.io/$PROJECT_ID/telegram-reminder-bot'
     waitFor: ['build-image']
 
-  # 3) Deploy to Cloud Run AND Capture the URL in one step
+  # 3) Deploy to Cloud Run (without APP_URL first to create the service)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'deploy-cloudrun'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'telegram-reminder-bot'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/telegram-reminder-bot:$COMMIT_SHA'
+      - '--region'
+      - 'asia-southeast1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '8080'
+      - '--memory'
+      - '256Mi'
+      - '--cpu'
+      - '1'
+      - '--max-instances'
+      - '10'
+      - '--min-instances'
+      - '0'
+      - '--timeout'
+      - '300'
+      - '--concurrency'
+      - '80'
+      - '--set-env-vars'
+      - >
+        NODE_ENV=production,
+        TZ=Asia/Bangkok,
+        GOOGLE_CLOUD_REGION=asia-southeast1,
+        TELEGRAM_BOT_TOKEN=${_TELEGRAM_BOT_TOKEN},
+        TELEGRAM_CHAT_ID=${_TELEGRAM_CHAT_ID},
+        ADMIN_CHAT_ID=${_ADMIN_CHAT_ID},
+        TIDB_HOST=${_TIDB_HOST},
+        TIDB_PORT=${_TIDB_PORT},
+        TIDB_USER=${_TIDB_USER},
+        TIDB_PASSWORD=${_TIDB_PASSWORD},
+        TIDB_DATABASE=${_TIDB_DATABASE},
+        TIDB_ENABLE_SSL=true,
+        LOG_LEVEL=${_LOG_LEVEL},
+        LOG_TO_FILE=false,
+        CRON_SECRET=${_CRON_SECRET},
+        TELEGRAM_WEBHOOK_SECRET=${_TELEGRAM_WEBHOOK_SECRET}
+    waitFor: ['push-image']
+
+  # 4) Get the URL and update the service to include APP_URL
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'set-app-url'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        # *** START: CORRECTION ***
-        # We get the service URL first. If it doesn't exist, this returns empty.
-        SERVICE_URL=$(gcloud run services describe telegram-reminder-bot --region=asia-southeast1 --format="value(status.url)" 2>/dev/null) || true
+        SERVICE_URL=$(gcloud run services describe telegram-reminder-bot --region=asia-southeast1 --format="value(status.url)")
+        echo "Updating service with APP_URL=$$SERVICE_URL"
+        gcloud run services update telegram-reminder-bot \
+          --region=asia-southeast1 \
+          --update-env-vars=APP_URL=$$SERVICE_URL
+        # Save the URL to a file for subsequent steps
+        echo $$SERVICE_URL > /workspace/service_url.txt
+    waitFor: ['deploy-cloudrun']
 
-        # If the URL is empty, construct a predictable one for the FIRST deployment.
-        if [ -z "$SERVICE_URL" ]; then
-          PROJECT_HASH=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)" | sha256sum | head -c 12)
-          SERVICE_URL="https://telegram-reminder-bot-${PROJECT_HASH}-as.a.run.app"
-          echo "Service does not exist yet. Using predictable URL for first deployment: $SERVICE_URL"
-        fi
-        
-        gcloud run deploy telegram-reminder-bot \
-          --image gcr.io/$PROJECT_ID/telegram-reminder-bot:$COMMIT_SHA \
-          --region asia-southeast1 \
-          --platform managed \
-          --allow-unauthenticated \
-          --port 8080 \
-          --memory 256Mi \
-          --cpu '1' \
-          --max-instances 10 \
-          --min-instances 0 \
-          --timeout 300 \
-          --concurrency 1 \
-          --set-env-vars="NODE_ENV=production,TZ=Asia/Bangkok,GOOGLE_CLOUD_REGION=asia-southeast1,TELEGRAM_BOT_TOKEN=${_TELEGRAM_BOT_TOKEN},TELEGRAM_CHAT_ID=${_TELEGRAM_CHAT_ID},ADMIN_CHAT_ID=${_ADMIN_CHAT_ID},TIDB_HOST=${_TIDB_HOST},TIDB_PORT=${_TIDB_PORT},TIDB_USER=${_TIDB_USER},TIDB_PASSWORD=${_TIDB_PASSWORD},TIDB_DATABASE=${_TIDB_DATABASE},TIDB_ENABLE_SSL=true,LOG_LEVEL=${_LOG_LEVEL},LOG_TO_FILE=false,CRON_SECRET=${_CRON_SECRET},APP_URL=$$SERVICE_URL,TELEGRAM_WEBHOOK_SECRET=${_TELEGRAM_WEBHOOK_SECRET}" \
-          --format="value(status.url)" > /workspace/service_url.txt
-          # *** END: CORRECTION ***
-    waitFor: ['push-image']
-
-  # 4) Set Telegram Webhook using the captured URL
+  # 5) Set Telegram Webhook using the captured URL
   - name: 'gcr.io/cloud-builders/curl'
     id: 'set-telegram-webhook'
     entrypoint: 'bash'
@@ -70,12 +100,13 @@ steps:
       - '-c'
       - |
         SERVICE_URL=$(cat /workspace/service_url.txt)
-        WEBHOOK_URL="$$SERVICE_URL/webhook" # IMPORTANT: Change '/webhook' if your path is different
+        WEBHOOK_URL="$$SERVICE_URL/webhook"
         echo "Setting Telegram webhook to $$WEBHOOK_URL"
+        # The secret token is sent as a header by Telegram, your app must validate it
         curl -fsS "https://api.telegram.org/bot${_TELEGRAM_BOT_TOKEN}/setWebhook?url=$$WEBHOOK_URL&secret_token=${_TELEGRAM_WEBHOOK_SECRET}"
-    waitFor: ['deploy-cloudrun']
+    waitFor: ['set-app-url']
 
- # 5) Health check using the captured URL
+  # 6) Health check using the captured URL
   - name: 'gcr.io/cloud-builders/curl'
     id: 'health-check'
     entrypoint: 'bash'
@@ -84,9 +115,8 @@ steps:
       - |
         SERVICE_URL=$(cat /workspace/service_url.txt)
         echo "🔍 Health checking: $$SERVICE_URL/health"
-        # Increase sleep time to allow the service to fully initialize
-        echo "Waiting 30 seconds for service to stabilize..."
-        sleep 30 
+        echo "Waiting 30 seconds for the new revision to stabilize..."
+        sleep 30
         for i in {1..5}; do
           if curl -fsS "$$SERVICE_URL/health"; then
             echo "✅ Health check passed"
@@ -111,7 +141,6 @@ substitutions:
   _TIDB_DATABASE: 'telegram_bot'
   _LOG_LEVEL: 'INFO'
   _CRON_SECRET: 'PLACEHOLDER'
-  # *** ADD THIS NEW VARIABLE ***
   _TELEGRAM_WEBHOOK_SECRET: 'YOUR_VERY_SECRET_RANDOM_STRING_HERE'
 
 # Build options
@@ -119,7 +148,6 @@ options:
   machineType: 'E2_HIGHCPU_8'
   logging: 'CLOUD_LOGGING_ONLY'
 
-# Build timeout (20m)
 timeout: '1200s'
 
 images:
@@ -130,3 +158,4 @@ tags:
   - 'telegram-bot'
   - 'cloud-run'
   - 'production'
+
