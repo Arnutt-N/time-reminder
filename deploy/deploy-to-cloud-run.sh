@@ -10,7 +10,7 @@ echo "🚀 Starting deployment to Google Cloud Run..."
 # Configuration
 # =============================================================================
 
-PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-telegram-reminder-bot-471714}"
+PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-your-google-cloud-project-id}"
 SERVICE_NAME="telegram-reminder-bot"
 REGION="asia-southeast1"
 REPO_NAME="time-reminder"

@@ -23,6 +23,7 @@ const dayjs = require("dayjs")
 const utc = require("dayjs/plugin/utc")
 const timezone = require("dayjs/plugin/timezone")
 const config = require("./config") // นำเข้า config
+const { deduplicateRecipients } = require("./src/utils/message-deduplicator") // นำเข้า message deduplicator
 
 // ตั้งค่า Day.js
 dayjs.extend(utc)
@@ -94,8 +95,8 @@ app.get("/", (_req, res) => {
   res.status(200).send("OK - Telegram Reminder Bot")
 })
 
-// สร้าง instance ของ bot โดยไม่ใช้ polling
-const bot = new TelegramBot(token, { polling: false })
+// Bot instance จะถูกสร้างหลังจาก server เริ่มทำงานแล้ว
+let bot = null
 
 // ปรับปรุงฟังก์ชัน initializeApp ให้มีการป้องกันการเรียกซ้ำ
 async function initializeApp() {
@@ -147,6 +148,18 @@ async function initializeApp() {
              // ค่อย ๆ ทำงานหนักภายหลังแบบไม่ kill โปรเซส
             holidaysData = loadHolidays();
             try { await initializeDatabase(); } catch(e){ logError('initializeDatabase', e); }
+            
+            // สร้าง bot instance หลังจาก server ฟังพอร์ตแล้ว (ป้องกัน Cloud Run startup failure)
+            try {
+              botLog(LOG_LEVELS.INFO, "initializeApp", "กำลังสร้าง Telegram Bot instance")
+              bot = new TelegramBot(token, { polling: false })
+              botLog(LOG_LEVELS.INFO, "initializeApp", "สร้าง Telegram Bot instance สำเร็จ")
+            } catch (botError) {
+              botLog(LOG_LEVELS.ERROR, "initializeApp", `ไม่สามารถสร้าง Telegram Bot: ${botError.message}`)
+              // ไม่ยกเลิกการทำงาน - ให้ server ทำงานต่อเพื่อ health checks
+              return resolve() // ส่งคืนสำเร็จแต่ไม่มี bot
+            }
+            
             // ENHANCED webhook configuration with validation and verification
             botLog(LOG_LEVELS.INFO, "initializeApp", "กำลังลบ webhook เดิม")
             await bot.deleteWebHook()
@@ -218,9 +231,14 @@ async function initializeApp() {
               "ตั้งค่า event handlers สำเร็จ"
             )
 
-            // ตั้งค่า cron jobs
-            setupCronJobs()
-            botLog(LOG_LEVELS.INFO, "initializeApp", "ตั้งค่า cron jobs สำเร็จ")
+            // ตั้งค่า cron jobs (เฉพาะโหมด internal)
+            const cronMode = process.env.CRON_MODE || 'external'
+            if (cronMode === 'internal') {
+              setupCronJobs()
+              botLog(LOG_LEVELS.INFO, "initializeApp", "ตั้งค่า internal cron jobs สำเร็จ")
+            } else {
+              botLog(LOG_LEVELS.INFO, "initializeApp", `ใช้ external scheduler (${cronMode}) - ข้าม internal cron jobs`)
+            }
 
             // ส่งข้อความแจ้งเตือนไปยังแอดมินว่าบอทเริ่มทำงานแล้ว
             try {
@@ -243,29 +261,37 @@ async function initializeApp() {
                   `ส่งข้อความแจ้งเตือนไปยังแอดมินสำเร็จ`
                 )
 
-                // สั่งจำลองคำสั่ง /start ให้กับแอดมิน
-                const simulatedMessage = {
-                  message_id: Date.now(),
-                  from: {
-                    id: adminChatId,
-                    first_name: "Admin",
-                    is_bot: false,
-                  },
-                  chat: {
-                    id: adminChatId,
-                    type: "private",
-                  },
-                  date: Math.floor(Date.now() / 1000),
-                  text: "/start",
-                }
+                // สั่งจำลองคำสั่ง /start ให้กับแอดมิน (เฉพาะใน development)
+                if (process.env.SIMULATE_START_ON_BOOT === 'true') {
+                  const simulatedMessage = {
+                    message_id: Date.now(),
+                    from: {
+                      id: adminChatId,
+                      first_name: "Admin",
+                      is_bot: false,
+                    },
+                    chat: {
+                      id: adminChatId,
+                      type: "private",
+                    },
+                    date: Math.floor(Date.now() / 1000),
+                    text: "/start",
+                  }
 
-                // เรียกใช้ processUpdate เพื่อจำลองการส่งคำสั่ง /start
-                await bot.processUpdate({ message: simulatedMessage })
-                botLog(
-                  LOG_LEVELS.INFO,
-                  "initializeApp",
-                  `จำลองการเรียกใช้คำสั่ง /start สำหรับแอดมินสำเร็จ`
-                )
+                  // เรียกใช้ processUpdate เพื่อจำลองการส่งคำสั่ง /start
+                  await bot.processUpdate({ message: simulatedMessage })
+                  botLog(
+                    LOG_LEVELS.INFO,
+                    "initializeApp",
+                    `จำลองการเรียกใช้คำสั่ง /start สำหรับแอดมินสำเร็จ`
+                  )
+                } else {
+                  botLog(
+                    LOG_LEVELS.INFO,
+                    "initializeApp",
+                    `ข้าม startup simulation (SIMULATE_START_ON_BOOT=${process.env.SIMULATE_START_ON_BOOT || 'false'})`
+                  )
+                }
               } else {
                 botLog(
                   LOG_LEVELS.WARN,
@@ -983,24 +1009,23 @@ async function sendMorningReminder() {
     
     const morningMessage = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
     
-    // Send to group/channel if configured
-    if (chatId) {
-      try {
-        await bot.sendMessage(chatId, morningMessage)
-        botLog(LOG_LEVELS.INFO, "sendMorningReminder", "ส่งข้อความไปยังกลุ่มสำเร็จ")
-      } catch (err) {
-        logError("sendMorningReminder-group", err)
-      }
-    }
-    
-    // Send to individual subscribers
+    // Send to group/channel and individual subscribers (with deduplication)
     const subscribers = await getSubscribedUsers()
-    botLog(LOG_LEVELS.INFO, "sendMorningReminder", `กำลังส่งข้อความไปยังผู้ใช้ ${subscribers.length} คน`)
+    const subscriberIds = subscribers.map(user => user.chatId)
+    const adminIds = chatId ? [chatId] : []
     
-    for (const user of subscribers) {
+    // ลดความซ้ำซ้อนของผู้รับ
+    const deduplicationResult = deduplicateRecipients(subscriberIds, adminIds, 'sendMorningReminder')
+    const uniqueRecipients = deduplicationResult.uniqueRecipients
+    
+    botLog(LOG_LEVELS.INFO, "sendMorningReminder", 
+      `กำลังส่งข้อความไปยัง ${uniqueRecipients.length} คน (จากต้นฉบับ ${deduplicationResult.originalCount} คน)`)
+    
+    // ส่งข้อความไปยังผู้รับที่ไม่ซ้ำ
+    for (const recipientId of uniqueRecipients) {
       try {
-        await bot.sendMessage(user.chatId, morningMessage)
-        botLog(LOG_LEVELS.DEBUG, "sendMorningReminder", `ส่งข้อความเช้าให้ ${user.chatId} สำเร็จ`)
+        await bot.sendMessage(recipientId, morningMessage)
+        botLog(LOG_LEVELS.DEBUG, "sendMorningReminder", `ส่งข้อความเช้าให้ ${recipientId} สำเร็จ`)
       } catch (error) {
         logError("sendMorningReminder-user", error)
       }
@@ -1023,24 +1048,23 @@ async function sendAfternoonReminder() {
     
     const afternoonMessage = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
     
-    // Send to group/channel if configured
-    if (chatId) {
-      try {
-        await bot.sendMessage(chatId, afternoonMessage)
-        botLog(LOG_LEVELS.INFO, "sendAfternoonReminder", "ส่งข้อความไปยังกลุ่มสำเร็จ")
-      } catch (err) {
-        logError("sendAfternoonReminder-group", err)
-      }
-    }
-    
-    // Send to individual subscribers
+    // Send to group/channel and individual subscribers (with deduplication)
     const subscribers = await getSubscribedUsers()
-    botLog(LOG_LEVELS.INFO, "sendAfternoonReminder", `กำลังส่งข้อความไปยังผู้ใช้ ${subscribers.length} คน`)
+    const subscriberIds = subscribers.map(user => user.chatId)
+    const adminIds = chatId ? [chatId] : []
     
-    for (const user of subscribers) {
+    // ลดความซ้ำซ้อนของผู้รับ
+    const deduplicationResult = deduplicateRecipients(subscriberIds, adminIds, 'sendAfternoonReminder')
+    const uniqueRecipients = deduplicationResult.uniqueRecipients
+    
+    botLog(LOG_LEVELS.INFO, "sendAfternoonReminder", 
+      `กำลังส่งข้อความไปยัง ${uniqueRecipients.length} คน (จากต้นฉบับ ${deduplicationResult.originalCount} คน)`)
+    
+    // ส่งข้อความไปยังผู้รับที่ไม่ซ้ำ
+    for (const recipientId of uniqueRecipients) {
       try {
-        await bot.sendMessage(user.chatId, afternoonMessage)
-        botLog(LOG_LEVELS.DEBUG, "sendAfternoonReminder", `ส่งข้อความบ่ายให้ ${user.chatId} สำเร็จ`)
+        await bot.sendMessage(recipientId, afternoonMessage)
+        botLog(LOG_LEVELS.DEBUG, "sendAfternoonReminder", `ส่งข้อความบ่ายให้ ${recipientId} สำเร็จ`)
       } catch (error) {
         logError("sendAfternoonReminder-user", error)
       }
@@ -1063,24 +1087,23 @@ async function sendEveningReminder() {
     
     const eveningMessage = getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
     
-    // Send to group/channel if configured
-    if (chatId) {
-      try {
-        await bot.sendMessage(chatId, eveningMessage)
-        botLog(LOG_LEVELS.INFO, "sendEveningReminder", "ส่งข้อความไปยังกลุ่มสำเร็จ")
-      } catch (err) {
-        logError("sendEveningReminder-group", err)
-      }
-    }
-    
-    // Send to individual subscribers
+    // Send to group/channel and individual subscribers (with deduplication)
     const subscribers = await getSubscribedUsers()
-    botLog(LOG_LEVELS.INFO, "sendEveningReminder", `กำลังส่งข้อความไปยังผู้ใช้ ${subscribers.length} คน`)
+    const subscriberIds = subscribers.map(user => user.chatId)
+    const adminIds = chatId ? [chatId] : []
     
-    for (const user of subscribers) {
+    // ลดความซ้ำซ้อนของผู้รับ
+    const deduplicationResult = deduplicateRecipients(subscriberIds, adminIds, 'sendEveningReminder')
+    const uniqueRecipients = deduplicationResult.uniqueRecipients
+    
+    botLog(LOG_LEVELS.INFO, "sendEveningReminder", 
+      `กำลังส่งข้อความไปยัง ${uniqueRecipients.length} คน (จากต้นฉบับ ${deduplicationResult.originalCount} คน)`)
+    
+    // ส่งข้อความไปยังผู้รับที่ไม่ซ้ำ
+    for (const recipientId of uniqueRecipients) {
       try {
-        await bot.sendMessage(user.chatId, eveningMessage)
-        botLog(LOG_LEVELS.DEBUG, "sendEveningReminder", `ส่งข้อความเย็นให้ ${user.chatId} สำเร็จ`)
+        await bot.sendMessage(recipientId, eveningMessage)
+        botLog(LOG_LEVELS.DEBUG, "sendEveningReminder", `ส่งข้อความเย็นให้ ${recipientId} สำเร็จ`)
       } catch (error) {
         logError("sendEveningReminder-user", error)
       }

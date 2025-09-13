@@ -1,15 +1,23 @@
 # ไฟล์ Environment variables - CRITICAL SECURITY
+# Block ALL .env files except .env.example
 env/
+!env/.env.example
 .env
 .env.*
+!.env.example
 .env.local
+.env.development
 .env.development.local
 .env.test.local
-.env.production.local
 .env.production
+.env.production.local
+env/.env
+env/.env.*
+!env/.env.example
 env/.env.production
+env/.env.development
 
-# Security files
+# Security files - CRITICAL SECURITY
 *.key
 *.pem
 *.p12
@@ -17,6 +25,16 @@ env/.env.production
 secrets.json
 service-account.json
 credentials.json
+*secret*
+*token*
+*password*
+*.crt
+*.cert
+*.keystore
+.env.backup
+.env.bak
+.env.save
+SECURITY_REMEDIATION.md
 
 # Logs
 logs/

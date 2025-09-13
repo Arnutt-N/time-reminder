@@ -7,7 +7,7 @@
 #   MODE=prod : require DB env, NODE_ENV=production, adds DB secrets
 #
 # Usage (dev):
-#   export GOOGLE_CLOUD_PROJECT=telegram-reminder-bot-471714
+#   export GOOGLE_CLOUD_PROJECT=your-google-cloud-project-id
 #   export TELEGRAM_BOT_TOKEN=xxxx:yyyy
 #   export ADMIN_CHAT_ID=123456789
 #   MODE=dev bash deploy.sh
@@ -25,7 +25,7 @@
 set -euo pipefail
 
 # ------------------------- Config --------------------------------------------
-PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-telegram-reminder-bot-471714}"
+PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-your-google-cloud-project-id}"
 REGION="${REGION:-asia-southeast1}"
 SERVICE_NAME="${SERVICE_NAME:-telegram-reminder-bot}"
 REPO_NAME="${REPO_NAME:-time-reminder}"      # Artifact Registry (docker) repo

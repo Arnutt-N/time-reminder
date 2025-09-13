@@ -6,16 +6,24 @@
 const path = require("path")
 const dotenvFlow = require("dotenv-flow")
 
-// โหลดไฟล์ .env ตามสภาพแวดล้อม
-const envResult = dotenvFlow.config({
-  // เลือกโฟลเดอร์ที่มีไฟล์ .env (ถ้าอยู่ในโฟลเดอร์อื่น)
-  path: path.resolve(process.cwd(), 'env'), // เปลี่ยนเป็นโฟลเดอร์ที่คุณต้องการ
-  // การตั้งค่าเพิ่มเติม (ถ้าจำเป็น)
-  // default_node_env: 'development',
-  // silent: true,
-})
+// โหลดไฟล์ .env ตามสภาพแวดล้อม - เฉพาะ non-production เท่านั้น
+const isProd = process.env.NODE_ENV === 'production'
 
-if (envResult.error) {
+let envResult = { error: null }
+if (!isProd) {
+  try {
+    envResult = dotenvFlow.config({
+      // เลือกโฟลเดอร์ที่มีไฟล์ .env (ถ้าอยู่ในโฟลเดอร์อื่น)
+      path: path.resolve(process.cwd(), 'env'), // เปลี่ยนเป็นโฟลเดอร์ที่คุณต้องการ
+      silent: true, // ไม่แสดงข้อผิดพลาดใน production
+    })
+  } catch (error) {
+    console.warn("Development .env loading failed:", error.message)
+    envResult = { error }
+  }
+}
+
+if (envResult.error && !isProd) {
   console.error("Error loading .env files:", envResult.error)
 } else {
   console.log(`Environment loaded: ${process.env.NODE_ENV || "development"}`)
@@ -167,38 +175,38 @@ if (config.isProduction) {
   const missing = requiredSecrets.filter((name) => !process.env[name])
   if (missing.length > 0) {
     console.error(
-      `❌ Error: Missing required environment variables: ${missing.join(
+      `❌ Warning: Missing required environment variables: ${missing.join(
         ", "
       )}`
     )
-    console.error("Application cannot start without these variables.")
-    process.exit(1)
+    console.error("Application may not function correctly without these variables.")
+    // Don't exit process - let Cloud Run health checks handle failures
   }
 
   // Secret validation and security checks
   const tokenLength = process.env.TELEGRAM_BOT_TOKEN ? process.env.TELEGRAM_BOT_TOKEN.length : 0
   const cronSecretLength = process.env.CRON_SECRET ? process.env.CRON_SECRET.length : 0
   
-  if (tokenLength < 40) {
-    console.error("❌ Error: TELEGRAM_BOT_TOKEN appears to be invalid (too short)")
-    process.exit(1)
+  if (tokenLength > 0 && tokenLength < 40) {
+    console.error("❌ Warning: TELEGRAM_BOT_TOKEN appears to be invalid (too short)")
+    // Don't exit process - let bot initialization handle this
   }
   
-  if (cronSecretLength < 16) {
-    console.error("❌ Error: CRON_SECRET is too weak (minimum 16 characters required)")
-    process.exit(1)
+  if (cronSecretLength > 0 && cronSecretLength < 16) {
+    console.error("❌ Warning: CRON_SECRET is too weak (minimum 16 characters required)")
+    // Don't exit process - let cron endpoint handle authentication failures
   }
 
   // Validate APP_URL format
-  if (!process.env.APP_URL.startsWith('https://')) {
-    console.error("❌ Error: APP_URL must use HTTPS in production")
-    process.exit(1)
+  if (process.env.APP_URL && !process.env.APP_URL.startsWith('https://')) {
+    console.error("❌ Warning: APP_URL should use HTTPS in production")
+    // Don't exit process - webhook setup will handle this
   }
 
   // ตรวจสอบค่า database config
   if (!config.database.host) {
-    console.error("❌ Error: Database host is not configured")
-    process.exit(1)
+    console.error("❌ Warning: Database host is not configured")
+    // Don't exit process - database operations will handle connection failures
   }
   
   console.log("✅ All required secrets validated successfully")

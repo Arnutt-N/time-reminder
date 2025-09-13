@@ -85,11 +85,28 @@ steps:
     waitFor: ['deploy-cloudrun']
 
   # Step 5: Verify deployment health
-  - name: 'gcr.io/cloud-builders/curl'
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'health-check'
-    args: 
-      - '-f'
-      - 'https://telegram-reminder-bot-$PROJECT_ID.a.run.app/health'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Get the service URL dynamically
+        SERVICE_URL=$(gcloud run services describe telegram-reminder-bot --region=us-central1 --format="value(status.url)")
+        echo "🔍 Health checking: $SERVICE_URL/health"
+        # Wait a bit for deployment to stabilize
+        sleep 10
+        # Perform health check with retry
+        for i in {1..5}; do
+          if curl -f "$SERVICE_URL/health"; then
+            echo "✅ Health check passed"
+            exit 0
+          fi
+          echo "⏳ Health check attempt $i failed, retrying in 10s..."
+          sleep 10
+        done
+        echo "❌ Health check failed after 5 attempts"
+        exit 1
     waitFor: ['update-traffic']
 
 # Substitution variables (configured in Cloud Build triggers)

@@ -14,35 +14,45 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Install curl for health checks (Cloud Run requirement)
-RUN apk add --no-cache curl
+# Install curl for health checks and CA certificates for SSL (TiDB Cloud Serverless requirement)
+RUN apk add --no-cache curl ca-certificates tzdata
 
 # Copy production dependencies from builder stage
 COPY --from=builder /app/node_modules ./node_modules
 
-# Copy application code
+# Copy application code (exclude dev environment files)
 COPY . .
+RUN rm -rf env/ || true
 
 # Create non-root user for security (Cloud Run best practice)
-RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
+RUN addgroup -g 1001 -S nodejs && adduser -S telegrambot -u 1001
 
-# Set ownership of app directory
-RUN chown -R nextjs:nodejs /app
+# Create directories with proper permissions
+RUN mkdir -p /app/data /app/logs && \
+    chown -R telegrambot:nodejs /app
 
 # Switch to non-root user
-USER nextjs
+USER telegrambot
 
-# Cloud Run specific environment variables
+# Cloud Run optimized environment variables
 ENV NODE_ENV=production
 ENV PORT=8080
 ENV TZ=Asia/Bangkok
+ENV CRON_MODE=external
+ENV SIMULATE_START_ON_BOOT=false
 
 # Expose port 8080 (Cloud Run default)
 EXPOSE 8080
 
-# Cloud Run handles health checks, no need for HEALTHCHECK directive
-# Create data directory for holidays (if needed)
-RUN mkdir -p /app/data
+# Add healthcheck endpoint validation (not HEALTHCHECK directive for Cloud Run)
+# Cloud Run will call /healthz and /readiness endpoints
 
-# Start the application
-CMD ["node", "index.js"]
+# Optimize for Cloud Run startup
+LABEL \
+    org.opencontainers.image.title="Telegram Reminder Bot" \
+    org.opencontainers.image.description="Production-ready Telegram reminder bot for Cloud Run" \
+    org.opencontainers.image.vendor="Telegram Bot Project" \
+    org.opencontainers.image.version="1.0.0"
+
+# Start the application with optimized Node.js settings for Cloud Run
+CMD ["node", "--max-old-space-size=256", "index.js"]

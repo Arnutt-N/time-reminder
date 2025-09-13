@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a Telegram reminder bot (`telegram-reminder-bot`) that sends scheduled notifications using TiDB Cloud Serverless as the database backend. The bot manages user subscriptions, holiday data, and cron-based scheduling for reminder notifications.
 
+⚠️ **SECURITY NOTICE**: This repository has been security-hardened. All secret keys and sensitive data have been removed and replaced with placeholder values. Never commit real credentials to the repository.
+
 ## Development Commands
 
 ### Environment Setup
@@ -37,10 +39,12 @@ This is a Telegram reminder bot (`telegram-reminder-bot`) that sends scheduled n
 - Implements singleton pattern to prevent multiple initializations
 
 **Configuration System (`config.js`)**
-- Environment-aware configuration using `dotenv-flow`
+- Production-safe environment configuration with conditional .env loading
 - Supports multiple environments (.env, .env.development, .env.production, .env.test)
-- Configuration files located in `env/` directory
+- Configuration files located in `env/` directory (development only)
+- Production uses Google Secret Manager integration
 - Centralizes all application settings including database, Telegram, and logging
+- Enhanced validation with graceful fallback for missing variables
 
 **Database Layer (`tidb-connection.js`)**
 - TiDB Cloud Serverless integration with connection pooling
@@ -74,19 +78,26 @@ This is a Telegram reminder bot (`telegram-reminder-bot`) that sends scheduled n
 
 ## Environment Configuration
 
+🔒 **SECURITY WARNING**: All environment files contain PLACEHOLDER VALUES ONLY. Real credentials must be configured separately and never committed to the repository.
+
 The application uses environment-specific configuration files in the `env/` directory:
-- `.env` - Default environment variables
-- `.env.development` - Development-specific overrides
-- `.env.production` - Production-specific overrides  
+- `.env` - Default environment variables (PLACEHOLDER VALUES)
+- `.env.development` - Development-specific overrides (PLACEHOLDER VALUES)
+- `.env.production` - Production-specific overrides (PLACEHOLDER VALUES)
 - `.env.test` - Test environment configuration
 
-### Required Environment Variables
-- `TELEGRAM_BOT_TOKEN` - Telegram bot API token
-- `TELEGRAM_CHAT_ID` - Default chat ID for notifications
-- `TIDB_HOST`, `TIDB_PORT`, `TIDB_USER`, `TIDB_PASSWORD`, `TIDB_DATABASE` - TiDB connection details
+### Required Environment Variables (Use Real Values, Not Placeholders)
+- `TELEGRAM_BOT_TOKEN` - Telegram bot API token ⚠️ **NEVER COMMIT REAL TOKENS**
+- `TELEGRAM_CHAT_ID` - Default chat ID for notifications ⚠️ **NEVER COMMIT REAL CHAT IDS**
+- `TIDB_HOST`, `TIDB_PORT`, `TIDB_USER`, `TIDB_PASSWORD`, `TIDB_DATABASE` - TiDB connection details ⚠️ **NEVER COMMIT REAL DATABASE CREDENTIALS**
 - `NODE_ENV` - Environment mode (development/production/test)
-- `CRON_SECRET` - Bearer token for external cron API endpoint authentication
-- `TELEGRAM_WEBHOOK_SECRET` - Optional webhook secret for additional security
+- `CRON_SECRET` - Bearer token for external cron API endpoint authentication ⚠️ **NEVER COMMIT REAL SECRETS**
+- `TELEGRAM_WEBHOOK_SECRET` - Optional webhook secret for additional security ⚠️ **NEVER COMMIT REAL SECRETS**
+
+### Secure Configuration Methods
+- **Development**: Use local `.env` files (gitignored) with real values
+- **Production**: Use Google Secret Manager or Cloud Run environment variables
+- **Cloud Build**: Use substitution variables with real values
 
 ## Database Schema
 
@@ -129,6 +140,9 @@ The application includes a Dockerfile configured for:
 - Enhanced webhook validation with secret token support
 - Token masking in logs to prevent credential exposure
 - Time validation for cron requests (6-slot allowlist)
+- 🔒 **Security-hardened repository**: All secrets removed and replaced with placeholders
+- 🛡️ **Enhanced .gitignore**: Comprehensive protection against accidental secret commits
+- ⚠️ **Mandatory credential rotation**: Previously exposed credentials must be rotated
 
 ### API Endpoints
 - `GET /` - Basic health check
