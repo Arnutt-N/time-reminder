@@ -28,14 +28,23 @@ steps:
     waitFor: ['build-image']
 
   # 3) Deploy to Cloud Run AND Capture the URL in one step
-  # The 'gcloud run deploy' command outputs the service URL upon completion.
-  # We capture this output and write it to a file in the shared /workspace.
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'deploy-cloudrun'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
+        # *** START: CORRECTION ***
+        # We get the service URL first. If it doesn't exist, this returns empty.
+        SERVICE_URL=$(gcloud run services describe telegram-reminder-bot --region=asia-southeast1 --format="value(status.url)" 2>/dev/null) || true
+
+        # If the URL is empty, construct a predictable one for the FIRST deployment.
+        if [ -z "$SERVICE_URL" ]; then
+          PROJECT_HASH=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)" | sha256sum | head -c 12)
+          SERVICE_URL="https://telegram-reminder-bot-${PROJECT_HASH}-as.a.run.app"
+          echo "Service does not exist yet. Using predictable URL for first deployment: $SERVICE_URL"
+        fi
+        
         gcloud run deploy telegram-reminder-bot \
           --image gcr.io/$PROJECT_ID/telegram-reminder-bot:$COMMIT_SHA \
           --region asia-southeast1 \
@@ -43,18 +52,17 @@ steps:
           --allow-unauthenticated \
           --port 8080 \
           --memory 256Mi \
-          --cpu 1 \
+          --cpu '1' \
           --max-instances 10 \
           --min-instances 0 \
           --timeout 300 \
           --concurrency 1 \
-          --set-env-vars="NODE_ENV=production,TZ=Asia/Bangkok,GOOGLE_CLOUD_REGION=asia-southeast1,TELEGRAM_BOT_TOKEN=${_TELEGRAM_BOT_TOKEN},TELEGRAM_CHAT_ID=${_TELEGRAM_CHAT_ID},ADMIN_CHAT_ID=${_ADMIN_CHAT_ID},TIDB_HOST=${_TIDB_HOST},TIDB_PORT=${_TIDB_PORT},TIDB_USER=${_TIDB_USER},TIDB_PASSWORD=${_TIDB_PASSWORD},TIDB_DATABASE=${_TIDB_DATABASE},TIDB_ENABLE_SSL=true,LOG_LEVEL=${_LOG_LEVEL},LOG_TO_FILE=false,CRON_SECRET=${_CRON_SECRET}" \
+          --set-env-vars="NODE_ENV=production,TZ=Asia/Bangkok,GOOGLE_CLOUD_REGION=asia-southeast1,TELEGRAM_BOT_TOKEN=${_TELEGRAM_BOT_TOKEN},TELEGRAM_CHAT_ID=${_TELEGRAM_CHAT_ID},ADMIN_CHAT_ID=${_ADMIN_CHAT_ID},TIDB_HOST=${_TIDB_HOST},TIDB_PORT=${_TIDB_PORT},TIDB_USER=${_TIDB_USER},TIDB_PASSWORD=${_TIDB_PASSWORD},TIDB_DATABASE=${_TIDB_DATABASE},TIDB_ENABLE_SSL=true,LOG_LEVEL=${_LOG_LEVEL},LOG_TO_FILE=false,CRON_SECRET=${_CRON_SECRET},APP_URL=$$SERVICE_URL,TELEGRAM_WEBHOOK_SECRET=${_TELEGRAM_WEBHOOK_SECRET}" \
           --format="value(status.url)" > /workspace/service_url.txt
+          # *** END: CORRECTION ***
     waitFor: ['push-image']
 
   # 4) Set Telegram Webhook using the captured URL
-  # Instead of telling your app its own URL, we tell Telegram directly.
-  # This avoids a second deployment.
   - name: 'gcr.io/cloud-builders/curl'
     id: 'set-telegram-webhook'
     entrypoint: 'bash'
@@ -64,11 +72,10 @@ steps:
         SERVICE_URL=$(cat /workspace/service_url.txt)
         WEBHOOK_URL="$$SERVICE_URL/webhook" # IMPORTANT: Change '/webhook' if your path is different
         echo "Setting Telegram webhook to $$WEBHOOK_URL"
-        curl -fsS "https://api.telegram.org/bot${_TELEGRAM_BOT_TOKEN}/setWebhook?url=$$WEBHOOK_URL"
+        curl -fsS "https://api.telegram.org/bot${_TELEGRAM_BOT_TOKEN}/setWebhook?url=$$WEBHOOK_URL&secret_token=${_TELEGRAM_WEBHOOK_SECRET}"
     waitFor: ['deploy-cloudrun']
 
-  # 5) Health check using the captured URL
-  # We read the URL from the file instead of calling gcloud again. This is much faster.
+ # 5) Health check using the captured URL
   - name: 'gcr.io/cloud-builders/curl'
     id: 'health-check'
     entrypoint: 'bash'
@@ -77,7 +84,9 @@ steps:
       - |
         SERVICE_URL=$(cat /workspace/service_url.txt)
         echo "🔍 Health checking: $$SERVICE_URL/health"
-        sleep 10
+        # Increase sleep time to allow the service to fully initialize
+        echo "Waiting 30 seconds for service to stabilize..."
+        sleep 30 
         for i in {1..5}; do
           if curl -fsS "$$SERVICE_URL/health"; then
             echo "✅ Health check passed"
@@ -90,7 +99,7 @@ steps:
         exit 1
     waitFor: ['set-telegram-webhook']
 
-# Variables for Trigger (fill these in the Trigger UI)
+# Variables for Trigger
 substitutions:
   _TELEGRAM_BOT_TOKEN: 'PLACEHOLDER'
   _TELEGRAM_CHAT_ID: 'PLACEHOLDER'
@@ -102,6 +111,8 @@ substitutions:
   _TIDB_DATABASE: 'telegram_bot'
   _LOG_LEVEL: 'INFO'
   _CRON_SECRET: 'PLACEHOLDER'
+  # *** ADD THIS NEW VARIABLE ***
+  _TELEGRAM_WEBHOOK_SECRET: 'YOUR_VERY_SECRET_RANDOM_STRING_HERE'
 
 # Build options
 options:
