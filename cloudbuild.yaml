@@ -1,10 +1,15 @@
-# Cloud Build configuration for Telegram Reminder Bot
-# Builds and deploys to Google Cloud Run automatically
+# Cloud Build configuration for Telegram Reminder Bot (production-ready)
+# - Build & Push image
+# - Deploy to Cloud Run (asia-southeast1)
+# - Set APP_URL after deploy
+# - Health check /health
+# ใช้ Container Registry (gcr.io) ตามของเดิม; จะย้ายไป Artifact Registry ภายหลังได้
+
 steps:
-  # Step 1: Build the Docker container
+  # 1) Build image
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-image'
-    args: 
+    args:
       - 'build'
       - '-t'
       - 'gcr.io/$PROJECT_ID/telegram-reminder-bot:$COMMIT_SHA'
@@ -14,7 +19,7 @@ steps:
     env:
       - 'DOCKER_BUILDKIT=1'
 
-  # Step 2: Push the container image to Container Registry
+  # 2) Push image
   - name: 'gcr.io/cloud-builders/docker'
     id: 'push-image'
     args:
@@ -23,7 +28,7 @@ steps:
       - 'gcr.io/$PROJECT_ID/telegram-reminder-bot'
     waitFor: ['build-image']
 
-  # Step 3: Deploy to Cloud Run
+  # 3) Deploy to Cloud Run (asia-southeast1)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'deploy-cloudrun'
     entrypoint: 'gcloud'
@@ -34,7 +39,7 @@ steps:
       - '--image'
       - 'gcr.io/$PROJECT_ID/telegram-reminder-bot:$COMMIT_SHA'
       - '--region'
-      - 'us-central1'
+      - 'asia-southeast1'
       - '--platform'
       - 'managed'
       - '--allow-unauthenticated'
@@ -56,6 +61,7 @@ steps:
       - >
         NODE_ENV=production,
         TZ=Asia/Bangkok,
+        GOOGLE_CLOUD_REGION=asia-southeast1,
         TELEGRAM_BOT_TOKEN=${_TELEGRAM_BOT_TOKEN},
         TELEGRAM_CHAT_ID=${_TELEGRAM_CHAT_ID},
         ADMIN_CHAT_ID=${_ADMIN_CHAT_ID},
@@ -70,7 +76,20 @@ steps:
         CRON_SECRET=${_CRON_SECRET}
     waitFor: ['push-image']
 
-  # Step 4: Update traffic to new revision (optional validation step)
+  # 4) Set APP_URL = service URL (ทำหลัง deploy เพื่อให้โค้ดตั้ง webhook ได้ถูกต้อง)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'set-app-url'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        SERVICE_URL=$(gcloud run services describe telegram-reminder-bot --region=asia-southeast1 --format="value(status.url)")
+        echo "Setting APP_URL=$SERVICE_URL"
+        gcloud run services update telegram-reminder-bot \
+          --region=asia-southeast1 \
+          --set-env-vars APP_URL=$SERVICE_URL
+
+  # 5) (optional) force traffic to latest
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'update-traffic'
     entrypoint: 'gcloud'
@@ -81,24 +100,21 @@ steps:
       - 'telegram-reminder-bot'
       - '--to-latest'
       - '--region'
-      - 'us-central1'
-    waitFor: ['deploy-cloudrun']
+      - 'asia-southeast1'
+    waitFor: ['set-app-url']
 
-  # Step 5: Verify deployment health
+  # 6) Health check
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'health-check'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        # Get the service URL dynamically
-        SERVICE_URL=$(gcloud run services describe telegram-reminder-bot --region=us-central1 --format="value(status.url)")
+        SERVICE_URL=$(gcloud run services describe telegram-reminder-bot --region=asia-southeast1 --format="value(status.url)")
         echo "🔍 Health checking: $SERVICE_URL/health"
-        # Wait a bit for deployment to stabilize
         sleep 10
-        # Perform health check with retry
         for i in {1..5}; do
-          if curl -f "$SERVICE_URL/health"; then
+          if curl -fsS "$SERVICE_URL/health"; then
             echo "✅ Health check passed"
             exit 0
           fi
@@ -109,38 +125,31 @@ steps:
         exit 1
     waitFor: ['update-traffic']
 
-# Substitution variables (configured in Cloud Build triggers)
+# Vars สำหรับ Trigger (กรอกค่าใน Trigger UI)
 substitutions:
-  _TELEGRAM_BOT_TOKEN: 'PLACEHOLDER' # Set in Cloud Build trigger
-  _TELEGRAM_CHAT_ID: 'PLACEHOLDER'   # Set in Cloud Build trigger  
-  _ADMIN_CHAT_ID: 'PLACEHOLDER'      # Set in Cloud Build trigger
-  _TIDB_HOST: 'PLACEHOLDER'          # Set in Cloud Build trigger
-  _TIDB_PORT: '4000'                 # Default TiDB port
-  _TIDB_USER: 'PLACEHOLDER'          # Set in Cloud Build trigger
-  _TIDB_PASSWORD: 'PLACEHOLDER'      # Set in Cloud Build trigger
-  _TIDB_DATABASE: 'telegram_bot'     # Default database name
-  _LOG_LEVEL: 'INFO'                 # Default log level for production
-  _CRON_SECRET: 'PLACEHOLDER'        # Set in Cloud Build trigger
+  _TELEGRAM_BOT_TOKEN: 'PLACEHOLDER'
+  _TELEGRAM_CHAT_ID: 'PLACEHOLDER'
+  _ADMIN_CHAT_ID: 'PLACEHOLDER'
+  _TIDB_HOST: 'PLACEHOLDER'
+  _TIDB_PORT: '4000'
+  _TIDB_USER: 'PLACEHOLDER'
+  _TIDB_PASSWORD: 'PLACEHOLDER'
+  _TIDB_DATABASE: 'telegram_bot'
+  _LOG_LEVEL: 'INFO'
+  _CRON_SECRET: 'PLACEHOLDER'
 
 # Build options
 options:
-  # Use high-performance machine for faster builds
   machineType: 'E2_HIGHCPU_8'
-  # Use Docker layer caching for faster builds
-  env:
-    - 'DOCKER_BUILDKIT=1'
-  # Log build output to Cloud Logging
   logging: 'CLOUD_LOGGING_ONLY'
 
-# Build timeout (20 minutes)
+# Build timeout (20m)
 timeout: '1200s'
 
-# Images to build and push
 images:
   - 'gcr.io/$PROJECT_ID/telegram-reminder-bot:$COMMIT_SHA'
   - 'gcr.io/$PROJECT_ID/telegram-reminder-bot:latest'
 
-# Build tags for organization
 tags:
   - 'telegram-bot'
   - 'cloud-run'
