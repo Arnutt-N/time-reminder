@@ -18,6 +18,7 @@ const fs = require("fs")
 const path = require("path")
 const express = require("express")
 const rateLimit = require("express-rate-limit")
+const crypto = require("crypto")
 const dayjs = require("dayjs")
 const utc = require("dayjs/plugin/utc")
 const timezone = require("dayjs/plugin/timezone")
@@ -42,6 +43,7 @@ let botInitialized = false
 let holidaysData = {}
 let appInitialized = false
 let eventHandlersInitialized = false
+let handlersRegistrationTimestamp = null
 let cronJobsInitialized = false
 let hasStarted = false
 let isTestCronRunning = false
@@ -145,21 +147,54 @@ async function initializeApp() {
              // ค่อย ๆ ทำงานหนักภายหลังแบบไม่ kill โปรเซส
             holidaysData = loadHolidays();
             try { await initializeDatabase(); } catch(e){ logError('initializeDatabase', e); }
-            // ล้าง webhook เดิม แล้วตั้งใหม่ (แนบ secret หากมี)
+            // ENHANCED webhook configuration with validation and verification
             botLog(LOG_LEVELS.INFO, "initializeApp", "กำลังลบ webhook เดิม")
             await bot.deleteWebHook()
+            
             const _url = `${appUrl}/bot${token}`
             const maskedUrl = `${appUrl}/bot${token.substring(0, 10)}***MASKED***`
+            
+            // Validate webhook URL format
+            if (!appUrl.startsWith('https://')) {
+              const errorMsg = "APP_URL must use HTTPS for webhook"
+              botLog(LOG_LEVELS.ERROR, "initializeApp", errorMsg)
+              return reject(new Error(errorMsg))
+            }
+            
             botLog(LOG_LEVELS.INFO, "initializeApp", `กำลังตั้งค่า webhook ใหม่: ${maskedUrl}`)
-            const webhookResult = await bot.setWebHook(
-              _url,
-              WEBHOOK_SECRET ? { secret_token: WEBHOOK_SECRET } : undefined
-            )
+            
+            const webhookOptions = {
+              allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member'],
+              drop_pending_updates: true,
+              max_connections: 40
+            }
+            
+            if (WEBHOOK_SECRET) {
+              webhookOptions.secret_token = WEBHOOK_SECRET
+              botLog(LOG_LEVELS.DEBUG, "initializeApp", "Webhook secret token configured")
+            }
+            
+            const webhookResult = await bot.setWebHook(_url, webhookOptions)
 
             if (!webhookResult) {
               const errorMsg = "ไม่สามารถตั้งค่า webhook ได้"
               botLog(LOG_LEVELS.ERROR, "initializeApp", errorMsg)
               return reject(new Error(errorMsg))
+            }
+            
+            // Verify webhook was set correctly
+            try {
+              const webhookInfo = await bot.getWebhookInfo()
+              if (webhookInfo.url !== _url) {
+                botLog(LOG_LEVELS.WARN, "initializeApp", "Webhook URL mismatch detected", {
+                  expected: maskedUrl,
+                  actual: webhookInfo.url ? `${webhookInfo.url.substring(0, 20)}***MASKED***` : 'none'
+                })
+              } else {
+                botLog(LOG_LEVELS.INFO, "initializeApp", "Webhook verification successful")
+              }
+            } catch (verifyError) {
+              botLog(LOG_LEVELS.WARN, "initializeApp", "Webhook verification failed", verifyError.message)
             }
 
             botInitialized = true
@@ -642,6 +677,16 @@ app.get("/ping", (req, res) => {
   res.status(200).send("pong")
 })
 
+// Cloud Run readiness probe endpoint - fast response (<100ms)
+app.get("/readiness", (req, res) => {
+  // Simple check - server can accept traffic
+  res.status(200).json({ 
+    ready: true, 
+    timestamp: new Date().toISOString(),
+    service: process.env.K_SERVICE || "telegram-reminder-bot"
+  })
+})
+
 app.get("/health", async (req, res) => {
   try {
     const serverTimeInfo = getServerTimeInfo()
@@ -666,13 +711,46 @@ app.get("/health", async (req, res) => {
       telegramApiStatus = "failed"
     }
     
-    // Check webhook status  
+    // ENHANCED webhook status detection  
     let webhookStatus = "inactive"
+    let webhookDetails = {}
+    
     try {
       const webhookInfo = await bot.getWebhookInfo()
-      webhookStatus = webhookInfo.url ? "active" : "inactive"
+      const expectedUrl = `${process.env.APP_URL}/bot${process.env.TELEGRAM_BOT_TOKEN}`
+      
+      if (webhookInfo.url) {
+        // Check if webhook URL matches current configuration
+        if (webhookInfo.url === expectedUrl) {
+          // Check if webhook has received updates recently (last 5 minutes)
+          const lastErrorDate = webhookInfo.last_error_date ? 
+            new Date(webhookInfo.last_error_date * 1000) : null
+          const now = new Date()
+          const timeDiff = lastErrorDate ? (now - lastErrorDate) / 1000 : Infinity
+          
+          if (!webhookInfo.last_error_message || timeDiff > 300) {
+            webhookStatus = "ok"
+          } else {
+            webhookStatus = "error"
+            webhookDetails.error = webhookInfo.last_error_message
+            webhookDetails.lastErrorDate = lastErrorDate.toISOString()
+          }
+        } else {
+          webhookStatus = "misconfigured"
+          webhookDetails.expected = expectedUrl
+          webhookDetails.actual = webhookInfo.url
+        }
+        
+        // Add webhook details for monitoring
+        webhookDetails.pendingUpdates = webhookInfo.pending_update_count || 0
+        webhookDetails.maxConnections = webhookInfo.max_connections || 0
+        webhookDetails.allowedUpdates = webhookInfo.allowed_updates || []
+      } else {
+        webhookStatus = "inactive"
+      }
     } catch (webhookError) {
       webhookStatus = "failed"
+      webhookDetails.error = webhookError.message
     }
 
     const healthData = {
@@ -690,6 +768,7 @@ app.get("/health", async (req, res) => {
         database: databaseStatus,
         telegram_api: telegramApiStatus,
         webhook: webhookStatus,
+        webhook_details: webhookDetails,
         cron_jobs: cronJobsInitialized || false,
         timezone: dayjs().tz(THAI_TIMEZONE).format()
       },
@@ -805,17 +884,38 @@ app.post("/reset-webhook", async (req, res) => {
 // External Cron Endpoint for GitHub Actions
 app.post("/api/cron", async (req, res) => {
   try {
-    // Verify authorization to prevent unauthorized triggers
-    const authHeader = req.headers.authorization
-    if (!authHeader || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    // ENHANCED authorization validation
+    const authHeader = req.headers.authorization || ""
+    const cronSecret = process.env.CRON_SECRET
+    
+    // Validate secret exists
+    if (!cronSecret) {
+      botLog(LOG_LEVELS.ERROR, "cron-endpoint", "CRON_SECRET not configured")
+      return res.status(500).json({error: "Server configuration error"})
+    }
+    
+    // Timing-safe comparison to prevent timing attacks
+    const expectedAuth = `Bearer ${cronSecret}`
+    if (authHeader.length !== expectedAuth.length || 
+        !crypto.timingSafeEqual(Buffer.from(authHeader), Buffer.from(expectedAuth))) {
+      
+      // Enhanced logging for security audit
       botLog(LOG_LEVELS.WARN, "cron-endpoint", "Unauthorized cron request", {
         ip: req.ip,
-        userAgent: req.get('user-agent')
+        userAgent: req.get('user-agent'),
+        timestamp: new Date().toISOString(),
+        authHeaderLength: authHeader.length,
+        expectedLength: expectedAuth.length
       })
       return res.status(401).json({error: "Unauthorized"})
     }
     
     const { type, time } = req.body
+    
+    // Request validation with enhanced logging
+    botLog(LOG_LEVELS.INFO, "cron-endpoint", "Authorized cron request received", {
+      type, time, ip: req.ip, userAgent: req.get('user-agent')
+    })
     
     // Validate request body
     if (!type || !time) {
@@ -839,7 +939,7 @@ app.post("/api/cron", async (req, res) => {
       return res.status(400).json({error: "Invalid cron type. Must be: morning, afternoon, or evening"})
     }
     
-    botLog(LOG_LEVELS.INFO, "cron-trigger", `Received ${type} reminder trigger for ${time}`)
+    botLog(LOG_LEVELS.INFO, "cron-trigger", `Processing ${type} reminder trigger for ${time}`)
     
     // Route to appropriate reminder function
     switch(type) {
@@ -1782,12 +1882,14 @@ async function checkPermission(chatId, permission) {
 // ฟังก์ชันตั้งค่า event handlers
 function setupEventHandlers() {
   try {
-    // ป้องกันการเรียกซ้ำ
+    // ENHANCED handler registration protection
     if (eventHandlersInitialized) {
+      const timeSinceRegistration = handlersRegistrationTimestamp ? 
+        Date.now() - handlersRegistrationTimestamp : 0
       botLog(
         LOG_LEVELS.INFO,
         "setupEventHandlers",
-        "Event handlers ได้รับการตั้งค่าแล้ว"
+        `Event handlers ได้รับการตั้งค่าแล้ว (${Math.round(timeSinceRegistration/1000)}s ago)`
       )
       return
     }
@@ -1904,8 +2006,16 @@ ${ADMIN_COMMANDS.join("\n")}
       "ตั้งค่า event handlers เสร็จสิ้น"
     )
 
-    // ตั้งค่าสถานะว่าได้เริ่มต้นแล้ว
+    // ตั้งค่าสถานะว่าได้เริ่มต้นแล้ว พร้อมเก็บ timestamp
     eventHandlersInitialized = true
+    handlersRegistrationTimestamp = Date.now()
+    
+    botLog(
+      LOG_LEVELS.DEBUG,
+      "setupEventHandlers", 
+      `Handler registration completed at ${new Date(handlersRegistrationTimestamp).toISOString()}`
+    )
+    
     return handlers
   } catch (error) {
     logError("setupEventHandlers", error)

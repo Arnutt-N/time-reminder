@@ -114,6 +114,40 @@ setInterval(() => {
 }, 1000)
 
 /**
+ * ENHANCED secret masking function to prevent credential exposure
+ * @param {any} obj - Object or string to mask secrets from
+ * @returns {any} - Object with secrets masked
+ */
+function maskSecrets(obj) {
+  if (typeof obj === 'string') {
+    return obj
+      .replace(/Bearer\s+[\w\-._~+\/]+=*/gi, 'Bearer ***MASKED***')
+      .replace(/token['":\s]*[\w\-._~+\/]+=*/gi, 'token: "***MASKED***"')
+      .replace(/password['":\s]*[\w\-._~+\/]+=*/gi, 'password: "***MASKED***"')
+      .replace(/secret['":\s]*[\w\-._~+\/]+=*/gi, 'secret: "***MASKED***"')
+      .replace(/key['":\s]*[\w\-._~+\/]+=*/gi, 'key: "***MASKED***"')
+  }
+  
+  if (typeof obj === 'object' && obj !== null) {
+    const masked = { ...obj }
+    const sensitiveKeys = ['token', 'password', 'secret', 'key', 'authorization', 'auth']
+    
+    for (const key in masked) {
+      if (sensitiveKeys.some(sensitive => key.toLowerCase().includes(sensitive))) {
+        masked[key] = '***MASKED***'
+      } else if (typeof masked[key] === 'object') {
+        masked[key] = maskSecrets(masked[key])
+      } else if (typeof masked[key] === 'string') {
+        masked[key] = maskSecrets(masked[key])
+      }
+    }
+    return masked
+  }
+  
+  return obj
+}
+
+/**
  * ฟังก์ชันล็อกที่ปรับเปลี่ยนตามระดับความสำคัญ
  * @param {number} level - ระดับความสำคัญของล็อก (จาก LOG_LEVELS)
  * @param {string} context - บริบทของล็อก (ชื่อฟังก์ชัน, โมดูล, ฯลฯ)
@@ -127,19 +161,23 @@ function botLog(level, context, message, data = null) {
       (key) => LOG_LEVELS[key] === level
     )
 
+    // ENHANCED secret masking for message and data
+    const maskedMessage = maskSecrets(message)
+    const maskedData = data ? maskSecrets(data) : null
+
     // Cloud Run structured JSON logging
     if (isCloudRun) {
       const structuredLog = {
         timestamp: dayjs().tz(THAI_TIMEZONE).toISOString(),
         severity: levelStr,
-        message: message,
+        message: maskedMessage,
         context: context,
         pid: process.pid,
         service: process.env.K_SERVICE || "telegram-reminder-bot",
         revision: process.env.K_REVISION,
         region: process.env.GOOGLE_CLOUD_REGION || "unknown",
         thai_time: timestamp,
-        ...(data && { data: data })
+        ...(maskedData && { data: maskedData })
       }
 
       // ใช้ console methods ตาม severity level สำหรับ Cloud Logging
@@ -159,40 +197,40 @@ function botLog(level, context, message, data = null) {
       }
     } else {
       // Development/Local logging format (เดิม)
-      // เพิ่ม PID ในข้อความล็อก
-      let logMessage = `[${timestamp}] [PID:${process.pid}] [${levelStr}] [${context}] ${message}`
+      // เพิ่ม PID ในข้อความล็อก พร้อม secret masking
+      let logMessage = `[${timestamp}] [PID:${process.pid}] [${levelStr}] [${context}] ${maskedMessage}`
 
-      // เพิ่มข้อมูลเพิ่มเติม (ถ้ามี)
+      // เพิ่มข้อมูลเพิ่มเติม (ถ้ามี) พร้อม secret masking
       let dataStr = ""
-      if (data !== null) {
+      if (maskedData !== null) {
         try {
-          if (typeof data === "object") {
-            dataStr = " " + JSON.stringify(data)
+          if (typeof maskedData === "object") {
+            dataStr = " " + JSON.stringify(maskedData)
           } else {
-            dataStr = " " + String(data)
+            dataStr = " " + String(maskedData)
           }
         } catch (err) {
           dataStr = " [ข้อมูลไม่สามารถแปลงเป็น JSON ได้]"
         }
       }
 
-      // ล็อกไปที่คอนโซล
+      // ล็อกไปที่คอนโซล พร้อม secret masking
       switch (level) {
         case LOG_LEVELS.DEBUG:
-          data && console.debug(logMessage, data)
-          !data && console.debug(logMessage)
+          maskedData && console.debug(logMessage, maskedData)
+          !maskedData && console.debug(logMessage)
           break
         case LOG_LEVELS.INFO:
-          data && console.log(logMessage, data)
-          !data && console.log(logMessage)
+          maskedData && console.log(logMessage, maskedData)
+          !maskedData && console.log(logMessage)
           break
         case LOG_LEVELS.WARN:
-          data && console.warn(logMessage, data)
-          !data && console.warn(logMessage)
+          maskedData && console.warn(logMessage, maskedData)
+          !maskedData && console.warn(logMessage)
           break
         case LOG_LEVELS.ERROR:
-          data && console.error(logMessage, data)
-          !data && console.error(logMessage)
+          maskedData && console.error(logMessage, maskedData)
+          !maskedData && console.error(logMessage)
           break
       }
 

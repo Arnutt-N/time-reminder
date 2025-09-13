@@ -150,19 +150,21 @@ config.isTest = currentEnv === "test"
 // เพิ่มข้อมูลสภาพแวดล้อมให้ config
 config.env = currentEnv
 
-// ตรวจสอบตัวแปรสำคัญในโหมด production
+// ENHANCED ตรวจสอบตัวแปรสำคัญในโหมด production พร้อม security validation
 if (config.isProduction) {
   console.log("Running in PRODUCTION mode")
 
-  const requiredVars = [
-    "TELEGRAM_BOT_TOKEN",
-    "APP_URL",
+  const requiredSecrets = [
+    "TELEGRAM_BOT_TOKEN",    // Bot authentication
+    "TELEGRAM_WEBHOOK_SECRET", // Webhook validation (recommended) 
+    "CRON_SECRET",           // API endpoint protection
+    "APP_URL",               // Webhook target URL
     "TIDB_HOST",
-    "TIDB_USER",
-    "TIDB_PASSWORD",
+    "TIDB_USER", 
+    "TIDB_PASSWORD"          // Database authentication
   ]
 
-  const missing = requiredVars.filter((name) => !process.env[name])
+  const missing = requiredSecrets.filter((name) => !process.env[name])
   if (missing.length > 0) {
     console.error(
       `❌ Error: Missing required environment variables: ${missing.join(
@@ -173,11 +175,33 @@ if (config.isProduction) {
     process.exit(1)
   }
 
+  // Secret validation and security checks
+  const tokenLength = process.env.TELEGRAM_BOT_TOKEN ? process.env.TELEGRAM_BOT_TOKEN.length : 0
+  const cronSecretLength = process.env.CRON_SECRET ? process.env.CRON_SECRET.length : 0
+  
+  if (tokenLength < 40) {
+    console.error("❌ Error: TELEGRAM_BOT_TOKEN appears to be invalid (too short)")
+    process.exit(1)
+  }
+  
+  if (cronSecretLength < 16) {
+    console.error("❌ Error: CRON_SECRET is too weak (minimum 16 characters required)")
+    process.exit(1)
+  }
+
+  // Validate APP_URL format
+  if (!process.env.APP_URL.startsWith('https://')) {
+    console.error("❌ Error: APP_URL must use HTTPS in production")
+    process.exit(1)
+  }
+
   // ตรวจสอบค่า database config
   if (!config.database.host) {
     console.error("❌ Error: Database host is not configured")
     process.exit(1)
   }
+  
+  console.log("✅ All required secrets validated successfully")
 }
 
 module.exports = config
