@@ -1,6 +1,6 @@
-# Cloud Build configuration for Telegram Reminder Bot (Final Version)
-# - Deploys the service first to obtain a URL.
-# - Updates the service with its own URL as an environment variable.
+# Cloud Build configuration for Telegram Reminder Bot (Final & Stable Version)
+# - Deploys the service with no traffic first to establish the URL.
+# - Updates the service with its own URL and directs all traffic to the new, healthy revision.
 # - Sets the Telegram webhook.
 # - Performs a final health check on the stable service.
 
@@ -27,7 +27,7 @@ steps:
       - 'gcr.io/$PROJECT_ID/telegram-reminder-bot'
     waitFor: ['build-image']
 
-  # 3) Deploy to Cloud Run (without APP_URL first to create the service)
+  # 3) Deploy to Cloud Run WITHOUT traffic to establish the service and URL
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'deploy-cloudrun'
     entrypoint: 'gcloud'
@@ -56,6 +56,7 @@ steps:
       - '300'
       - '--concurrency'
       - '80'
+      - '--no-traffic'  # <-- KEY CHANGE 1
       - '--set-env-vars'
       - >
         NODE_ENV=production,
@@ -76,23 +77,24 @@ steps:
         TELEGRAM_WEBHOOK_SECRET=${_TELEGRAM_WEBHOOK_SECRET}
     waitFor: ['push-image']
 
-  # 4) Get the URL and update the service to include APP_URL
+  # 4) Get URL, update service with APP_URL, AND route all traffic to the new revision
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    id: 'set-app-url'
+    id: 'set-app-url-and-route-traffic'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
         SERVICE_URL=$(gcloud run services describe telegram-reminder-bot --region=asia-southeast1 --format="value(status.url)")
-        echo "Updating service with APP_URL=$$SERVICE_URL"
+        echo "Updating service with APP_URL=$$SERVICE_URL and routing traffic"
         gcloud run services update telegram-reminder-bot \
           --region=asia-southeast1 \
-          --update-env-vars=APP_URL=$$SERVICE_URL
+          --update-env-vars=APP_URL=$$SERVICE_URL \
+          --to-latest # <-- KEY CHANGE 2: Route 100% traffic to this new, healthy revision
         # Save the URL to a file for subsequent steps
         echo $$SERVICE_URL > /workspace/service_url.txt
     waitFor: ['deploy-cloudrun']
 
-  # 5) Set Telegram Webhook using the captured URL
+  # 5) Set Telegram Webhook
   - name: 'gcr.io/cloud-builders/curl'
     id: 'set-telegram-webhook'
     entrypoint: 'bash'
@@ -102,11 +104,10 @@ steps:
         SERVICE_URL=$(cat /workspace/service_url.txt)
         WEBHOOK_URL="$$SERVICE_URL/webhook"
         echo "Setting Telegram webhook to $$WEBHOOK_URL"
-        # The secret token is sent as a header by Telegram, your app must validate it
         curl -fsS "https://api.telegram.org/bot${_TELEGRAM_BOT_TOKEN}/setWebhook?url=$$WEBHOOK_URL&secret_token=${_TELEGRAM_WEBHOOK_SECRET}"
-    waitFor: ['set-app-url']
+    waitFor: ['set-app-url-and-route-traffic']
 
-  # 6) Health check using the captured URL
+  # 6) Health check
   - name: 'gcr.io/cloud-builders/curl'
     id: 'health-check'
     entrypoint: 'bash'
@@ -115,7 +116,7 @@ steps:
       - |
         SERVICE_URL=$(cat /workspace/service_url.txt)
         echo "🔍 Health checking: $$SERVICE_URL/health"
-        echo "Waiting 30 seconds for the new revision to stabilize..."
+        echo "Waiting 30 seconds for traffic to be fully routed..."
         sleep 30
         for i in {1..5}; do
           if curl -fsS "$$SERVICE_URL/health"; then
@@ -158,4 +159,3 @@ tags:
   - 'telegram-bot'
   - 'cloud-run'
   - 'production'
-
