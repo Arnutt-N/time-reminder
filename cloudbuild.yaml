@@ -1,9 +1,8 @@
-# Cloud Build configuration for Telegram Reminder Bot (production-ready)
-# - Build & Push image
-# - Deploy to Cloud Run (asia-southeast1)
-# - Set APP_URL after deploy
-# - Health check /health
-# ใช้ Container Registry (gcr.io) ตามของเดิม; จะย้ายไป Artifact Registry ภายหลังได้
+# Cloud Build configuration for Telegram Reminder Bot (Optimized)
+# - Builds and pushes the container image.
+# - Deploys to Cloud Run in a single step and captures the service URL.
+# - Uses the captured URL to set the Telegram webhook externally.
+# - Uses the captured URL for a final health check.
 
 steps:
   # 1) Build image
@@ -28,104 +27,70 @@ steps:
       - 'gcr.io/$PROJECT_ID/telegram-reminder-bot'
     waitFor: ['build-image']
 
-  # 3) Deploy to Cloud Run (asia-southeast1)
+  # 3) Deploy to Cloud Run AND Capture the URL in one step
+  # The 'gcloud run deploy' command outputs the service URL upon completion.
+  # We capture this output and write it to a file in the shared /workspace.
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'deploy-cloudrun'
-    entrypoint: 'gcloud'
-    args:
-      - 'run'
-      - 'deploy'
-      - 'telegram-reminder-bot'
-      - '--image'
-      - 'gcr.io/$PROJECT_ID/telegram-reminder-bot:$COMMIT_SHA'
-      - '--region'
-      - 'asia-southeast1'
-      - '--platform'
-      - 'managed'
-      - '--allow-unauthenticated'
-      - '--port'
-      - '8080'
-      - '--memory'
-      - '256Mi'
-      - '--cpu'
-      - '0.25'
-      - '--max-instances'
-      - '10'
-      - '--min-instances'
-      - '0'
-      - '--timeout'
-      - '300'
-      - '--concurrency'
-      - '80'
-      - '--set-env-vars'
-      - >
-        NODE_ENV=production,
-        TZ=Asia/Bangkok,
-        GOOGLE_CLOUD_REGION=asia-southeast1,
-        TELEGRAM_BOT_TOKEN=${_TELEGRAM_BOT_TOKEN},
-        TELEGRAM_CHAT_ID=${_TELEGRAM_CHAT_ID},
-        ADMIN_CHAT_ID=${_ADMIN_CHAT_ID},
-        TIDB_HOST=${_TIDB_HOST},
-        TIDB_PORT=${_TIDB_PORT},
-        TIDB_USER=${_TIDB_USER},
-        TIDB_PASSWORD=${_TIDB_PASSWORD},
-        TIDB_DATABASE=${_TIDB_DATABASE},
-        TIDB_ENABLE_SSL=true,
-        LOG_LEVEL=${_LOG_LEVEL},
-        LOG_TO_FILE=false,
-        CRON_SECRET=${_CRON_SECRET}
-    waitFor: ['push-image']
-
-  # 4) Set APP_URL = service URL (ทำหลัง deploy เพื่อให้โค้ดตั้ง webhook ได้ถูกต้อง)
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    id: 'set-app-url'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        SERVICE_URL=$(gcloud run services describe telegram-reminder-bot --region=asia-southeast1 --format="value(status.url)")
-        echo "Setting APP_URL=$SERVICE_URL"
-        gcloud run services update telegram-reminder-bot \
-          --region=asia-southeast1 \
-          --set-env-vars APP_URL=$SERVICE_URL
+        gcloud run deploy telegram-reminder-bot \
+          --image gcr.io/$PROJECT_ID/telegram-reminder-bot:$COMMIT_SHA \
+          --region asia-southeast1 \
+          --platform managed \
+          --allow-unauthenticated \
+          --port 8080 \
+          --memory 256Mi \
+          --cpu 0.25 \
+          --max-instances 10 \
+          --min-instances 0 \
+          --timeout 300 \
+          --concurrency 80 \
+          --set-env-vars="NODE_ENV=production,TZ=Asia/Bangkok,GOOGLE_CLOUD_REGION=asia-southeast1,TELEGRAM_BOT_TOKEN=${_TELEGRAM_BOT_TOKEN},TELEGRAM_CHAT_ID=${_TELEGRAM_CHAT_ID},ADMIN_CHAT_ID=${_ADMIN_CHAT_ID},TIDB_HOST=${_TIDB_HOST},TIDB_PORT=${_TIDB_PORT},TIDB_USER=${_TIDB_USER},TIDB_PASSWORD=${_TIDB_PASSWORD},TIDB_DATABASE=${_TIDB_DATABASE},TIDB_ENABLE_SSL=true,LOG_LEVEL=${_LOG_LEVEL},LOG_TO_FILE=false,CRON_SECRET=${_CRON_SECRET}" \
+          --format="value(status.url)" > /workspace/service_url.txt
+    waitFor: ['push-image']
 
-  # 5) (optional) force traffic to latest
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    id: 'update-traffic'
-    entrypoint: 'gcloud'
+  # 4) Set Telegram Webhook using the captured URL
+  # Instead of telling your app its own URL, we tell Telegram directly.
+  # This avoids a second deployment.
+  - name: 'gcr.io/cloud-builders/curl'
+    id: 'set-telegram-webhook'
+    entrypoint: 'bash'
     args:
-      - 'run'
-      - 'services'
-      - 'update-traffic'
-      - 'telegram-reminder-bot'
-      - '--to-latest'
-      - '--region'
-      - 'asia-southeast1'
-    waitFor: ['set-app-url']
+      - '-c'
+      - |
+        SERVICE_URL=$(cat /workspace/service_url.txt)
+        WEBHOOK_URL="$$SERVICE_URL/webhook" # IMPORTANT: Change '/webhook' if your path is different
+        echo "Setting Telegram webhook to $$WEBHOOK_URL"
+        curl -fsS "https://api.telegram.org/bot${_TELEGRAM_BOT_TOKEN}/setWebhook?url=$$WEBHOOK_URL"
+    waitFor: ['deploy-cloudrun']
 
-  # 6) Health check
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  # 5) Health check using the captured URL
+  # We read the URL from the file instead of calling gcloud again. This is much faster.
+  - name: 'gcr.io/cloud-builders/curl'
     id: 'health-check'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        SERVICE_URL=$(gcloud run services describe telegram-reminder-bot --region=asia-southeast1 --format="value(status.url)")
-        echo "🔍 Health checking: $SERVICE_URL/health"
+        SERVICE_URL=$(cat /workspace/service_url.txt)
+        echo "🔍 Health checking: $$SERVICE_URL/health"
         sleep 10
         for i in {1..5}; do
-          if curl -fsS "$SERVICE_URL/health"; then
+          if curl -fsS "$$SERVICE_URL/health"; then
             echo "✅ Health check passed"
             exit 0
           fi
-          echo "⏳ Health check attempt $i failed, retrying in 10s..."
+          echo "⏳ Health check attempt $$i failed, retrying in 10s..."
           sleep 10
         done
         echo "❌ Health check failed after 5 attempts"
         exit 1
-    waitFor: ['update-traffic']
+    waitFor: ['set-telegram-webhook']
 
-# Vars สำหรับ Trigger (กรอกค่าใน Trigger UI)
+# Variables for Trigger (fill these in the Trigger UI)
 substitutions:
   _TELEGRAM_BOT_TOKEN: 'PLACEHOLDER'
   _TELEGRAM_CHAT_ID: 'PLACEHOLDER'
