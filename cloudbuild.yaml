@@ -1,33 +1,23 @@
 # Cloud Build configuration for Telegram Reminder Bot (Final & Stable Version)
 # - Deploys the service with no traffic first to establish the URL.
-# - Updates the service with its own URL and directs all traffic to the new, healthy revision.
-# - Sets the Telegram webhook.
-# - Performs a final health check on the stable service.
+# - Updates the service with its own URL.
+# - Routes all traffic to the new, healthy revision.
+# - Sets the Telegram webhook and performs a final health check.
 
 steps:
   # 1) Build image (No changes)
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-image'
-    args:
-      - 'build'
-      - '-t'
-      - 'gcr.io/$PROJECT_ID/telegram-reminder-bot:$COMMIT_SHA'
-      - '-t'
-      - 'gcr.io/$PROJECT_ID/telegram-reminder-bot:latest'
-      - '.'
-    env:
-      - 'DOCKER_BUILDKIT=1'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/telegram-reminder-bot:$COMMIT_SHA', '-t', 'gcr.io/$PROJECT_ID/telegram-reminder-bot:latest', '.']
+    env: ['DOCKER_BUILDKIT=1']
 
   # 2) Push image (No changes)
   - name: 'gcr.io/cloud-builders/docker'
     id: 'push-image'
-    args:
-      - 'push'
-      - '--all-tags'
-      - 'gcr.io/$PROJECT_ID/telegram-reminder-bot'
+    args: ['push', '--all-tags', 'gcr.io/$PROJECT_ID/telegram-reminder-bot']
     waitFor: ['build-image']
 
-  # 3) Deploy to Cloud Run WITHOUT traffic to establish the service and URL
+  # 3) Deploy to Cloud Run WITHOUT traffic
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'deploy-cloudrun'
     entrypoint: 'gcloud'
@@ -56,7 +46,7 @@ steps:
       - '300'
       - '--concurrency'
       - '80'
-      - '--no-traffic'  # <-- KEY CHANGE 1
+      - '--no-traffic'
       - '--set-env-vars'
       - >
         NODE_ENV=production,
@@ -77,44 +67,56 @@ steps:
         TELEGRAM_WEBHOOK_SECRET=${_TELEGRAM_WEBHOOK_SECRET}
     waitFor: ['push-image']
 
-  # 4) Get URL, update service with APP_URL, AND route all traffic to the new revision
+  # 4) Get URL and update the service with APP_URL. This creates a new revision.
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    id: 'set-app-url-and-route-traffic'
+    id: 'set-app-url'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        SERVICE_URL=$(gcloud run services describe telegram-reminder-bot --region=asia-southeast1 --format="value(status.url)")
-        echo "Updating service with APP_URL=$$SERVICE_URL and routing traffic"
+        SERVICE_URL=$$(gcloud run services describe telegram-reminder-bot --region=asia-southeast1 --format="value(status.url)")
+        echo "Updating service with APP_URL=$$SERVICE_URL"
         gcloud run services update telegram-reminder-bot \
           --region=asia-southeast1 \
-          --update-env-vars=APP_URL=$$SERVICE_URL \
-          --to-latest # <-- KEY CHANGE 2: Route 100% traffic to this new, healthy revision
-        # Save the URL to a file for subsequent steps
+          --update-env-vars=APP_URL=$$SERVICE_URL
         echo $$SERVICE_URL > /workspace/service_url.txt
     waitFor: ['deploy-cloudrun']
 
-  # 5) Set Telegram Webhook
+  # 5) Route 100% of traffic to the LATEST revision which now has the correct APP_URL
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'update-traffic'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'services'
+      - 'update-traffic'
+      - 'telegram-reminder-bot'
+      - '--to-latest'
+      - '--region'
+      - 'asia-southeast1'
+    waitFor: ['set-app-url']
+
+  # 6) Set Telegram Webhook
   - name: 'gcr.io/cloud-builders/curl'
     id: 'set-telegram-webhook'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        SERVICE_URL=$(cat /workspace/service_url.txt)
+        SERVICE_URL=$$(cat /workspace/service_url.txt)
         WEBHOOK_URL="$$SERVICE_URL/webhook"
         echo "Setting Telegram webhook to $$WEBHOOK_URL"
         curl -fsS "https://api.telegram.org/bot${_TELEGRAM_BOT_TOKEN}/setWebhook?url=$$WEBHOOK_URL&secret_token=${_TELEGRAM_WEBHOOK_SECRET}"
-    waitFor: ['set-app-url-and-route-traffic']
+    waitFor: ['update-traffic']
 
-  # 6) Health check
+  # 7) Health check
   - name: 'gcr.io/cloud-builders/curl'
     id: 'health-check'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        SERVICE_URL=$(cat /workspace/service_url.txt)
+        SERVICE_URL=$$(cat /workspace/service_url.txt)
         echo "🔍 Health checking: $$SERVICE_URL/health"
         echo "Waiting 30 seconds for traffic to be fully routed..."
         sleep 30
