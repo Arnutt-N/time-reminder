@@ -43,11 +43,11 @@ steps:
           --allow-unauthenticated \
           --port 8080 \
           --memory 256Mi \
-          --cpu 0.25 \
+          --cpu 1 \
           --max-instances 10 \
           --min-instances 0 \
           --timeout 300 \
-          --concurrency 80 \
+          --concurrency 1 \
           --set-env-vars="NODE_ENV=production,TZ=Asia/Bangkok,GOOGLE_CLOUD_REGION=asia-southeast1,TELEGRAM_BOT_TOKEN=${_TELEGRAM_BOT_TOKEN},TELEGRAM_CHAT_ID=${_TELEGRAM_CHAT_ID},ADMIN_CHAT_ID=${_ADMIN_CHAT_ID},TIDB_HOST=${_TIDB_HOST},TIDB_PORT=${_TIDB_PORT},TIDB_USER=${_TIDB_USER},TIDB_PASSWORD=${_TIDB_PASSWORD},TIDB_DATABASE=${_TIDB_DATABASE},TIDB_ENABLE_SSL=true,LOG_LEVEL=${_LOG_LEVEL},LOG_TO_FILE=false,CRON_SECRET=${_CRON_SECRET}" \
           --format="value(status.url)" > /workspace/service_url.txt
     waitFor: ['push-image']
