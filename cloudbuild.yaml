@@ -17,7 +17,7 @@ steps:
     args: ['push', '--all-tags', 'gcr.io/$PROJECT_ID/telegram-reminder-bot']
     waitFor: ['build-image']
 
-  # 3) Deploy to Cloud Run WITHOUT traffic
+# 3) Deploy to Cloud Run WITHOUT traffic
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'deploy-cloudrun'
     entrypoint: 'gcloud'
@@ -48,23 +48,27 @@ steps:
       - '80'
       - '--no-traffic'
       - '--set-env-vars'
+      # --- START OF CORRECTION ---
+      # The name on the left is what the app sees (no underscore).
+      # The value on the right is from the build trigger (with underscore).
       - >
         NODE_ENV=production,
         TZ=Asia/Bangkok,
         GOOGLE_CLOUD_REGION=asia-southeast1,
-        _TIDB_PORT=${_TIDB_PORT},
-        _TIDB_DATABASE=${_TIDB_DATABASE},
-        _TIDB_ENABLE_SSL=${_TIDB_ENABLE_SSL},
-        _LOG_LEVEL=${_LOG_LEVEL},
-        _LOG_TO_FILE=${_LOG_TO_FILE},
-        _TELEGRAM_BOT_TOKEN=${_TELEGRAM_BOT_TOKEN},
-        _TELEGRAM_CHAT_ID=${_TELEGRAM_CHAT_ID},
-        _ADMIN_CHAT_ID=${_ADMIN_CHAT_ID},
-        _TELEGRAM_WEBHOOK_SECRET=${_TELEGRAM_WEBHOOK_SECRET},
-        _CRON_SECRET=${_CRON_SECRET},
-        _TIDB_HOST=${_TIDB_HOST},
-        _TIDB_USER=${_TIDB_USER},
-        _TIDB_PASSWORD=${_TIDB_PASSWORD}
+        TIDB_HOST=${_TIDB_HOST},
+        TIDB_PORT=${_TIDB_PORT},
+        TIDB_USER=${_TIDB_USER},
+        TIDB_PASSWORD=${_TIDB_PASSWORD},
+        TIDB_DATABASE=${_TIDB_DATABASE},
+        TIDB_ENABLE_SSL=${_TIDB_ENABLE_SSL},
+        LOG_LEVEL=${_LOG_LEVEL},
+        LOG_TO_FILE=${_LOG_TO_FILE},
+        TELEGRAM_BOT_TOKEN=${_TELEGRAM_BOT_TOKEN},
+        TELEGRAM_CHAT_ID=${_TELEGRAM_CHAT_ID},
+        ADMIN_CHAT_ID=${_ADMIN_CHAT_ID},
+        TELEGRAM_WEBHOOK_SECRET=${_TELEGRAM_WEBHOOK_SECRET},
+        CRON_SECRET=${_CRON_SECRET}
+      # --- END OF CORRECTION ---
     waitFor: ['push-image']
 
   # 4) Get URL and update the service with APP_URL. This creates a new revision.
