@@ -38,6 +38,7 @@ let botInitialized = false
 let holidaysData = {}
 let appInitialized = false
 let eventHandlersInitialized = false
+let webhookEndpointRegistered = false
 let handlersRegistrationTimestamp = null
 let cronJobsInitialized = false
 let hasStarted = false
@@ -346,6 +347,84 @@ async function startApplication() {
         "TELEGRAM_CHAT_ID is not set. Messages will only be sent to individual subscribers.")
     }
 
+    // Auto-generate APP_URL for Cloud Run if not provided
+    if (!process.env.APP_URL) {
+      const region = process.env.GOOGLE_CLOUD_REGION || 'us-central1'
+      const projectId = process.env.GOOGLE_CLOUD_PROJECT
+      const serviceName = process.env.K_SERVICE || 'telegram-reminder-bot'
+
+      if (projectId && region) {
+        const generatedUrl = `https://${serviceName}-${projectId}.${region}.run.app`
+        process.env.APP_URL = generatedUrl
+        appUrl = generatedUrl
+
+        botLog(LOG_LEVELS.INFO, "startApplication", `🔗 Auto-generated APP_URL: ${generatedUrl}`)
+      } else {
+        botLog(LOG_LEVELS.WARN, "startApplication", "Cannot auto-generate APP_URL: missing project info")
+      }
+    } else {
+      botLog(LOG_LEVELS.INFO, "startApplication", `📍 Using provided APP_URL: ${appUrl}`)
+    }
+
+    // Register webhook endpoint AFTER token is loaded
+    if (token && !webhookEndpointRegistered) {
+      const webhookPath = `/bot${token}`
+      app.post(webhookPath, (req, res) => {
+        try {
+          // ตรวจ header ถ้าตั้งค่าไว้
+          if (WEBHOOK_SECRET) {
+            const header = req.get("X-Telegram-Bot-Api-Secret-Token")
+            if (!header || header !== WEBHOOK_SECRET) {
+              botLog(LOG_LEVELS.WARN, "webhook", "Unauthorized webhook (secret mismatch)")
+              return res.sendStatus(401)
+            }
+          }
+
+          botLog(LOG_LEVELS.DEBUG, "webhook", "Received update from Telegram", {
+            updateId: req.body.update_id,
+            chatId: req.body.message?.chat?.id,
+          })
+
+          if (!bot) {
+            botLog(LOG_LEVELS.ERROR, "webhook", "Bot instance not initialized")
+            return res.sendStatus(503)
+          }
+
+          bot.processUpdate(req.body)
+          res.sendStatus(200)
+        } catch (error) {
+          logError("webhook", error)
+          // ต้องส่ง 200 กลับไปเสมอเพื่อป้องกัน Telegram ส่งข้อมูลเดิมซ้ำ
+          res.sendStatus(200)
+        }
+      })
+
+      webhookEndpointRegistered = true
+      botLog(LOG_LEVELS.INFO, "startApplication", `🔗 Webhook endpoint registered: ${webhookPath}`)
+    }
+
+    // Critical environment variable validation
+    function validateCriticalEnvironment() {
+      const required = ['TELEGRAM_BOT_TOKEN', 'APP_URL']
+      const missing = required.filter(key => !process.env[key])
+
+      if (missing.length > 0) {
+        const errorMsg = `Missing critical environment variables: ${missing.join(', ')}`
+        botLog(LOG_LEVELS.ERROR, "startApplication", errorMsg)
+        throw new Error(errorMsg)
+      }
+
+      botLog(LOG_LEVELS.INFO, "startApplication", "✅ All critical environment variables validated")
+    }
+
+    // Validate critical environment variables
+    try {
+      validateCriticalEnvironment()
+    } catch (error) {
+      botLog(LOG_LEVELS.ERROR, "startApplication", `❌ Environment validation failed: ${error.message}`)
+      throw error
+    }
+
     // ตรวจสอบและจัดการไฟล์ล็อก
     if (fs.existsSync("bot.lock")) {
       const pid = parseInt(fs.readFileSync("bot.lock", "utf8"), 10)
@@ -415,6 +494,66 @@ async function startApplication() {
       "startApplication",
       "บอทพร้อมทำงานและตอบสนองคำสั่งแล้ว"
     )
+
+    // Comprehensive startup validation
+    async function validateStartupSequence() {
+      const checks = [
+        { name: "Config module loaded", check: () => !!config },
+        { name: "Production secrets loaded", check: () => !!process.env.TELEGRAM_BOT_TOKEN },
+        { name: "Bot token assigned", check: () => !!token },
+        { name: "App URL configured", check: () => !!appUrl },
+        { name: "Bot instance created", check: () => !!bot },
+        { name: "Database initialized", check: () => databaseInitialized },
+        { name: "Event handlers setup", check: () => eventHandlersInitialized },
+        { name: "Webhook configured", check: async () => {
+          if (!bot) return false
+          try {
+            const info = await bot.getWebhookInfo()
+            return !!info.url && info.url.includes(token)
+          } catch (error) {
+            return false
+          }
+        }}
+      ]
+
+      botLog(LOG_LEVELS.INFO, "startup-validation", "🔍 Starting comprehensive startup validation...")
+
+      const results = []
+      for (const test of checks) {
+        try {
+          const result = typeof test.check === 'function' ? await test.check() : test.check
+          const status = result ? "✅" : "❌"
+          const message = `${status} ${test.name}: ${result}`
+
+          botLog(LOG_LEVELS.INFO, "startup-validation", message)
+          results.push({ name: test.name, passed: result, status })
+
+        } catch (error) {
+          const message = `❌ ${test.name}: ERROR - ${error.message}`
+          botLog(LOG_LEVELS.ERROR, "startup-validation", message)
+          results.push({ name: test.name, passed: false, error: error.message, status: "❌" })
+        }
+      }
+
+      const passed = results.filter(r => r.passed).length
+      const total = results.length
+      const successRate = Math.round((passed / total) * 100)
+
+      if (successRate === 100) {
+        botLog(LOG_LEVELS.INFO, "startup-validation", `🎉 All startup checks passed (${passed}/${total})`)
+      } else {
+        botLog(LOG_LEVELS.WARN, "startup-validation", `⚠️ Startup validation: ${passed}/${total} passed (${successRate}%)`)
+      }
+
+      return { results, passed, total, successRate }
+    }
+
+    // Run startup validation after complete initialization
+    try {
+      await validateStartupSequence()
+    } catch (error) {
+      logError("startup-validation", error)
+    }
 
     // ตั้งค่าสถานะว่าได้เริ่มต้นแล้ว
     hasStarted = true
@@ -846,30 +985,137 @@ app.get("/health", async (req, res) => {
   }
 })
 
-// ตั้งค่า webhook พร้อมตรวจ Secret Header
-app.post(`/bot${token}`, (req, res) => {
-  try {
-    // ตรวจ header ถ้าตั้งค่าไว้
-    if (WEBHOOK_SECRET) {
-      const header = req.get("X-Telegram-Bot-Api-Secret-Token")
-      if (!header || header !== WEBHOOK_SECRET) {
-        botLog(LOG_LEVELS.WARN, "webhook", "Unauthorized webhook (secret mismatch)")
-        return res.sendStatus(401)
-      }
-    }
-    botLog(LOG_LEVELS.DEBUG, "webhook", "Received update from Telegram", {
-      updateId: req.body.update_id,
-      chatId: req.body.message?.chat?.id,
-    })
+// Enhanced Health Monitoring Endpoints
 
-    bot.processUpdate(req.body)
-    res.sendStatus(200)
+// Webhook status monitoring endpoint
+app.get("/webhook-status", async (req, res) => {
+  try {
+    if (!bot) {
+      return res.status(503).json({
+        status: "error",
+        message: "Bot instance not initialized"
+      })
+    }
+
+    const webhookInfo = await bot.getWebhookInfo()
+    const expectedUrl = `${appUrl}/bot${token}`
+
+    const status = {
+      status: "ok",
+      webhook: {
+        configured: !!webhookInfo.url,
+        urlMatch: webhookInfo.url === expectedUrl,
+        expectedUrl: expectedUrl,
+        actualUrl: webhookInfo.url,
+        pendingUpdates: webhookInfo.pending_update_count,
+        lastError: webhookInfo.last_error_message || null
+      },
+      timestamp: new Date().toISOString()
+    }
+
+    // Return error status if webhook not properly configured
+    if (!status.webhook.configured || !status.webhook.urlMatch) {
+      status.status = "error"
+    }
+
+    res.json(status)
   } catch (error) {
-    logError("webhook", error)
-    // ต้องส่ง 200 กลับไปเสมอเพื่อป้องกัน Telegram ส่งข้อมูลเดิมซ้ำ
-    res.sendStatus(200)
+    logError("webhook-status", error)
+    res.status(503).json({
+      status: "error",
+      message: error.message
+    })
   }
 })
+
+// Bot instance health check
+app.get("/bot-health", async (req, res) => {
+  try {
+    const checks = {
+      botInstance: !!bot,
+      token: !!token,
+      appUrl: !!appUrl,
+      webhookSecret: !!WEBHOOK_SECRET,
+      eventHandlers: eventHandlersInitialized
+    }
+
+    let status = "ok"
+    let issues = []
+
+    if (!checks.botInstance) {
+      status = "error"
+      issues.push("Bot instance not created")
+    }
+
+    if (!checks.token) {
+      status = "error"
+      issues.push("Bot token not loaded")
+    }
+
+    // Test bot API connection if bot exists
+    let botInfo = null
+    if (bot) {
+      try {
+        botInfo = await bot.getMe()
+      } catch (error) {
+        status = "error"
+        issues.push("Bot API connection failed")
+      }
+    }
+
+    res.json({
+      status,
+      checks,
+      issues,
+      botInfo,
+      timestamp: new Date().toISOString()
+    })
+
+  } catch (error) {
+    logError("bot-health", error)
+    res.status(503).json({
+      status: "error",
+      message: error.message
+    })
+  }
+})
+
+// Development-only environment debugging endpoint
+app.get("/debug/env", (req, res) => {
+  try {
+    // Security: Only allow in development environment
+    if (process.env.NODE_ENV !== 'development') {
+      botLog(LOG_LEVELS.WARN, "debug-env", `Unauthorized access attempt from ${req.ip}`)
+      return res.status(404).send('Not Found')
+    }
+
+    // Safe environment variable status (no actual values)
+    const debugInfo = {
+      nodeEnv: process.env.NODE_ENV,
+      hasToken: !!process.env.TELEGRAM_BOT_TOKEN,
+      hasAppUrl: !!process.env.APP_URL,
+      hasChatId: !!process.env.TELEGRAM_CHAT_ID,
+      hasAdminChatId: !!process.env.ADMIN_CHAT_ID,
+      hasWebhookSecret: !!process.env.TELEGRAM_WEBHOOK_SECRET,
+      hasCronSecret: !!process.env.CRON_SECRET,
+      appUrl: process.env.APP_URL, // Safe to show URL in development
+      port: process.env.PORT,
+      region: process.env.GOOGLE_CLOUD_REGION,
+      projectId: process.env.GOOGLE_CLOUD_PROJECT,
+      serviceName: process.env.K_SERVICE,
+      timestamp: new Date().toISOString()
+    }
+
+    botLog(LOG_LEVELS.INFO, "debug-env", "Environment debug info requested")
+    res.json(debugInfo)
+
+  } catch (error) {
+    logError("debug-env", error)
+    res.status(500).json({ error: "Debug endpoint failed" })
+  }
+})
+
+// Webhook endpoint will be registered dynamically after token is loaded
 
 // เส้นทางสำหรับการตั้งค่า webhook
 app.get("/webhook-info", async (req, res) => {
@@ -1942,12 +2188,13 @@ function setupEventHandlers() {
     handlers.start = bot.onText(/^\/(start|help)$/, async (msg) => {
       try {
         const chatId = msg.chat.id
+        const userId = msg.from?.id
+        const username = msg.from?.username || 'unknown'
         const isAdminUser = await isAdmin(chatId)
-        botLog(
-          LOG_LEVELS.INFO,
-          "command-start",
-          `ผู้ใช้ ${chatId} เรียกใช้คำสั่ง /start (Admin: ${isAdminUser})`
-        )
+
+        // ENHANCED: Detailed logging for debugging
+        botLog(LOG_LEVELS.INFO, "command-debug",
+          `📥 Received /start from user ${userId} (${username}) in chat ${chatId} [Admin: ${isAdminUser}]`)
 
         let welcomeMessage = `
 สวัสดีครับ/ค่ะ! 👋
@@ -1979,15 +2226,28 @@ ${ADMIN_COMMANDS.join("\n")}
         }
 
         await bot.sendMessage(chatId, welcomeMessage)
-        botLog(
-          LOG_LEVELS.INFO,
-          "command-start",
-          `ส่งข้อความต้อนรับให้ ${
-            isAdminUser ? "แอดมิน" : "ผู้ใช้"
-          }: ${chatId} สำเร็จ`
-        )
+
+        // ENHANCED: Success logging
+        botLog(LOG_LEVELS.INFO, "command-debug",
+          `✅ Successfully sent /start response to ${userId} (${welcomeMessage.length} chars)`)
       } catch (error) {
-        logError("command-start", error)
+        // ENHANCED: Improved error handling
+        const errorInfo = {
+          userId: msg.from?.id,
+          chatId: msg.chat.id,
+          username: msg.from?.username,
+          error: error.message
+        }
+
+        logError("command-start-error", error, errorInfo)
+
+        try {
+          // Send Thai language error response
+          await bot.sendMessage(msg.chat.id, "❌ เกิดข้อผิดพลาดในระบบ กรุณาลองใหม่อีกครั้ง")
+          botLog(LOG_LEVELS.INFO, "command-debug", `📤 Sent error response to ${msg.chat.id}`)
+        } catch (sendError) {
+          logError("command-start-sendError", sendError, errorInfo)
+        }
       }
     })
 

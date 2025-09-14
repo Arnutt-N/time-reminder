@@ -1,23 +1,55 @@
-# Cloud Build configuration for Telegram Reminder Bot (Final & Stable Version)
-# - Deploys the service with no traffic first to establish the URL.
-# - Updates the service with its own URL.
-# - Routes all traffic to the new, healthy revision.
-# - Sets the Telegram webhook and performs a final health check.
+# Cloud Build configuration (Optimized for Cost and Speed)
+# - Uses a cost-effective E2_MEDIUM machine type.
+# - Implements npm package caching to speed up subsequent builds.
 
 steps:
-  # 1) Build image (No changes)
+  # STEP 0: Restore npm cache if it exists
+  - name: 'gcr.io/cloud-builders/gsutil'
+    id: 'restore-npm-cache'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        gsutil -m cp -r gs://$PROJECT_ID_cache/node_modules . || true
+    waitFor: ['-'] # Start immediately
+
+  # STEP 1: Build Image (Modified to use cache)
   - name: 'gcr.io/cloud-builders/docker'
     id: 'build-image'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/telegram-reminder-bot:$COMMIT_SHA', '-t', 'gcr.io/$PROJECT_ID/telegram-reminder-bot:latest', '.']
+    args:
+      - 'build'
+      - '--tag'
+      - 'gcr.io/$PROJECT_ID/telegram-reminder-bot:$COMMIT_SHA'
+      - '--tag'
+      - 'gcr.io/$PROJECT_ID/telegram-reminder-bot:latest'
+      - '--cache-from' # Use cache from previous builds
+      - 'gcr.io/$PROJECT_ID/telegram-reminder-bot:latest'
+      - '.'
     env: ['DOCKER_BUILDKIT=1']
+    waitFor: ['restore-npm-cache']
 
-  # 2) Push image (No changes)
+  # STEP 2: Push image (No changes)
   - name: 'gcr.io/cloud-builders/docker'
     id: 'push-image'
     args: ['push', '--all-tags', 'gcr.io/$PROJECT_ID/telegram-reminder-bot']
     waitFor: ['build-image']
 
-# 3) Deploy to Cloud Run WITHOUT traffic
+  # STEP 3: Save npm cache for the next build
+  - name: 'gcr.io/cloud-builders/gsutil'
+    id: 'save-npm-cache'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # This step runs in parallel with pushing the image
+        if [ -d "node_modules" ]; then
+          gsutil -m rsync -r node_modules gs://$PROJECT_ID_cache/node_modules
+        fi
+    waitFor: ['build-image'] # Start as soon as the image is built
+
+  # --- Deployment steps remain the same ---
+
+  # 4) Deploy to Cloud Run WITHOUT traffic
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'deploy-cloudrun'
     entrypoint: 'gcloud'
@@ -48,17 +80,11 @@ steps:
       - '80'
       - '--no-traffic'
       - '--set-env-vars'
-      # --- START OF CORRECTION ---
-      # The name on the left is what the app sees (no underscore).
-      # The value on the right is from the build trigger (with underscore).
       - >
         NODE_ENV=production,
         TZ=Asia/Bangkok,
         GOOGLE_CLOUD_REGION=asia-southeast1,
-        TIDB_HOST=${_TIDB_HOST},
         TIDB_PORT=${_TIDB_PORT},
-        TIDB_USER=${_TIDB_USER},
-        TIDB_PASSWORD=${_TIDB_PASSWORD},
         TIDB_DATABASE=${_TIDB_DATABASE},
         TIDB_ENABLE_SSL=${_TIDB_ENABLE_SSL},
         LOG_LEVEL=${_LOG_LEVEL},
@@ -67,11 +93,13 @@ steps:
         TELEGRAM_CHAT_ID=${_TELEGRAM_CHAT_ID},
         ADMIN_CHAT_ID=${_ADMIN_CHAT_ID},
         TELEGRAM_WEBHOOK_SECRET=${_TELEGRAM_WEBHOOK_SECRET},
-        CRON_SECRET=${_CRON_SECRET}
-      # --- END OF CORRECTION ---
+        CRON_SECRET=${_CRON_SECRET},
+        TIDB_HOST=${_TIDB_HOST},
+        TIDB_USER=${_TIDB_USER},
+        TIDB_PASSWORD=${_TIDB_PASSWORD}
     waitFor: ['push-image']
 
-  # 4) Get URL and update the service with APP_URL. This creates a new revision.
+  # 5) Get URL and update service with APP_URL
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'set-app-url'
     entrypoint: 'bash'
@@ -86,7 +114,7 @@ steps:
         echo $$SERVICE_URL > /workspace/service_url.txt
     waitFor: ['deploy-cloudrun']
 
-  # 5) Route 100% of traffic to the LATEST revision which now has the correct APP_URL
+  # 6) Route 100% of traffic to the LATEST revision
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'update-traffic'
     entrypoint: 'gcloud'
@@ -100,9 +128,7 @@ steps:
       - 'asia-southeast1'
     waitFor: ['set-app-url']
 
-  # 6) Set Telegram Webhook
-  # NOTE: Webhook setup now handled by the application on startup since secrets
-  # are only available inside the Cloud Run container via Secret Manager
+  # 7) Delegate Webhook Setup (No change)
   - name: 'gcr.io/cloud-builders/curl'
     id: 'set-telegram-webhook'
     entrypoint: 'bash'
@@ -112,11 +138,10 @@ steps:
         SERVICE_URL=$$(cat /workspace/service_url.txt)
         echo "📝 Service URL ready: $$SERVICE_URL"
         echo "🔗 Telegram webhook will be configured by the application on startup"
-        echo "ℹ️  Bot will use APP_URL environment variable and TELEGRAM_BOT_TOKEN secret"
         echo "✅ Webhook setup delegated to application"
     waitFor: ['update-traffic']
 
-  # 7) Health check
+  # 8) Health check (No change)
   - name: 'gcr.io/cloud-builders/curl'
     id: 'health-check'
     entrypoint: 'bash'
@@ -139,32 +164,25 @@ steps:
         exit 1
     waitFor: ['set-telegram-webhook']
 
-# Variables for Trigger - Updated to use substitution variables
+# Variables for Trigger
 substitutions:
-  # These should be configured in your Cloud Build trigger:
-  # Telegram Bot Configuration
   _TELEGRAM_BOT_TOKEN: 'your_bot_token_here'
   _TELEGRAM_CHAT_ID: 'your_chat_id_here'
   _ADMIN_CHAT_ID: 'your_admin_chat_id_here'
   _TELEGRAM_WEBHOOK_SECRET: 'your_webhook_secret_here'
   _CRON_SECRET: 'your_cron_secret_here'
-
-  # Database Configuration
   _TIDB_HOST: 'your_tidb_host_here'
   _TIDB_USER: 'your_tidb_user_here'
   _TIDB_PASSWORD: 'your_tidb_password_here'
   _TIDB_DATABASE: 'telegram_bot'
   _TIDB_PORT: '4000'
   _TIDB_ENABLE_SSL: 'true'
-
-  # Logging Configuration
   _LOG_LEVEL: 'INFO'
   _LOG_TO_FILE: 'false'
 
-# Build options
+# Build options - COST SAVING
 options:
-  machineType: 'E2_HIGHCPU_8'
-  logging: 'CLOUD_LOGGING_ONLY'
+  machineType: 'E2_MEDIUM' # Changed from E2_HIGHCPU_8
 
 timeout: '1200s'
 
