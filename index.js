@@ -30,14 +30,8 @@ dayjs.extend(utc)
 dayjs.extend(timezone)
 const THAI_TIMEZONE = "Asia/Bangkok"
 
-// กำหนดตัวแปรสำคัญจาก config
-const token = config.telegramBotToken;
-const chatId = config.telegramChatId;
-const appUrl = config.appUrl;
-const port = config.port;
-const HOLIDAYS_FILE = config.holidaysFile;
-// optional security header for Telegram webhook
-const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || ""
+// กำหนดตัวแปรสำคัญจาก config - จะถูกตั้งค่าหลัง loadProductionSecrets()
+let token, chatId, appUrl, port, HOLIDAYS_FILE, WEBHOOK_SECRET;
 
 // ตัวแปรสถานะการเริ่มต้น
 let botInitialized = false
@@ -49,13 +43,6 @@ let cronJobsInitialized = false
 let hasStarted = false
 let isTestCronRunning = false
 let testCron = null
-
-// ตรวจสอบว่ามี TELEGRAM_CHAT_ID หรือไม่
-if (!chatId) {
-  console.warn(
-    "TELEGRAM_CHAT_ID is not set. Messages will only be sent to individual subscribers."
-  )
-}
 
 // สร้าง Express app
 const app = express()
@@ -338,6 +325,26 @@ async function startApplication() {
 
   try {
     botLog(LOG_LEVELS.INFO, "startApplication", "เริ่มต้นการทำงานของโปรแกรม")
+
+    // CRITICAL: Load production secrets before accessing config values
+    botLog(LOG_LEVELS.INFO, "startApplication", "🔐 Loading production secrets...")
+    await config.loadProductionSecrets()
+
+    // Initialize config variables after secrets are loaded
+    token = config.telegramBotToken;
+    chatId = config.telegramChatId;
+    appUrl = config.appUrl;
+    port = config.port;
+    HOLIDAYS_FILE = config.holidaysFile;
+    WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || "";
+
+    botLog(LOG_LEVELS.INFO, "startApplication", "✅ Configuration initialized with secrets")
+
+    // Validate configuration after secrets are loaded
+    if (!chatId) {
+      botLog(LOG_LEVELS.WARN, "startApplication",
+        "TELEGRAM_CHAT_ID is not set. Messages will only be sent to individual subscribers.")
+    }
 
     // ตรวจสอบและจัดการไฟล์ล็อก
     if (fs.existsSync("bot.lock")) {
