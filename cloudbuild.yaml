@@ -52,19 +52,19 @@ steps:
         NODE_ENV=production,
         TZ=Asia/Bangkok,
         GOOGLE_CLOUD_REGION=asia-southeast1,
-        TELEGRAM_BOT_TOKEN=${_TELEGRAM_BOT_TOKEN},
-        TELEGRAM_CHAT_ID=${_TELEGRAM_CHAT_ID},
-        ADMIN_CHAT_ID=${_ADMIN_CHAT_ID},
-        TIDB_HOST=${_TIDB_HOST},
-        TIDB_PORT=${_TIDB_PORT},
-        TIDB_USER=${_TIDB_USER},
-        TIDB_PASSWORD=${_TIDB_PASSWORD},
-        TIDB_DATABASE=${_TIDB_DATABASE},
-        TIDB_ENABLE_SSL=true,
-        LOG_LEVEL=${_LOG_LEVEL},
-        LOG_TO_FILE=false,
-        CRON_SECRET=${_CRON_SECRET},
-        TELEGRAM_WEBHOOK_SECRET=${_TELEGRAM_WEBHOOK_SECRET}
+        _TIDB_PORT=${_TIDB_PORT},
+        _TIDB_DATABASE=${_TIDB_DATABASE},
+        _TIDB_ENABLE_SSL=${_TIDB_ENABLE_SSL},
+        _LOG_LEVEL=${_LOG_LEVEL},
+        _LOG_TO_FILE=${_LOG_TO_FILE},
+        _TELEGRAM_BOT_TOKEN=${_TELEGRAM_BOT_TOKEN},
+        _TELEGRAM_CHAT_ID=${_TELEGRAM_CHAT_ID},
+        _ADMIN_CHAT_ID=${_ADMIN_CHAT_ID},
+        _TELEGRAM_WEBHOOK_SECRET=${_TELEGRAM_WEBHOOK_SECRET},
+        _CRON_SECRET=${_CRON_SECRET},
+        _TIDB_HOST=${_TIDB_HOST},
+        _TIDB_USER=${_TIDB_USER},
+        _TIDB_PASSWORD=${_TIDB_PASSWORD}
     waitFor: ['push-image']
 
   # 4) Get URL and update the service with APP_URL. This creates a new revision.
@@ -97,6 +97,8 @@ steps:
     waitFor: ['set-app-url']
 
   # 6) Set Telegram Webhook
+  # NOTE: Webhook setup now handled by the application on startup since secrets
+  # are only available inside the Cloud Run container via Secret Manager
   - name: 'gcr.io/cloud-builders/curl'
     id: 'set-telegram-webhook'
     entrypoint: 'bash'
@@ -104,9 +106,10 @@ steps:
       - '-c'
       - |
         SERVICE_URL=$$(cat /workspace/service_url.txt)
-        WEBHOOK_URL="$$SERVICE_URL/webhook"
-        echo "Setting Telegram webhook to $$WEBHOOK_URL"
-        curl -fsS "https://api.telegram.org/bot${_TELEGRAM_BOT_TOKEN}/setWebhook?url=$$WEBHOOK_URL&secret_token=${_TELEGRAM_WEBHOOK_SECRET}"
+        echo "📝 Service URL ready: $$SERVICE_URL"
+        echo "🔗 Telegram webhook will be configured by the application on startup"
+        echo "ℹ️  Bot will use APP_URL environment variable and TELEGRAM_BOT_TOKEN secret"
+        echo "✅ Webhook setup delegated to application"
     waitFor: ['update-traffic']
 
   # 7) Health check
@@ -132,19 +135,27 @@ steps:
         exit 1
     waitFor: ['set-telegram-webhook']
 
-# Variables for Trigger
+# Variables for Trigger - Updated to use substitution variables
 substitutions:
-  _TELEGRAM_BOT_TOKEN: 'PLACEHOLDER'
-  _TELEGRAM_CHAT_ID: 'PLACEHOLDER'
-  _ADMIN_CHAT_ID: 'PLACEHOLDER'
-  _TIDB_HOST: 'PLACEHOLDER'
-  _TIDB_PORT: '4000'
-  _TIDB_USER: 'PLACEHOLDER'
-  _TIDB_PASSWORD: 'PLACEHOLDER'
+  # These should be configured in your Cloud Build trigger:
+  # Telegram Bot Configuration
+  _TELEGRAM_BOT_TOKEN: 'your_bot_token_here'
+  _TELEGRAM_CHAT_ID: 'your_chat_id_here'
+  _ADMIN_CHAT_ID: 'your_admin_chat_id_here'
+  _TELEGRAM_WEBHOOK_SECRET: 'your_webhook_secret_here'
+  _CRON_SECRET: 'your_cron_secret_here'
+
+  # Database Configuration
+  _TIDB_HOST: 'your_tidb_host_here'
+  _TIDB_USER: 'your_tidb_user_here'
+  _TIDB_PASSWORD: 'your_tidb_password_here'
   _TIDB_DATABASE: 'telegram_bot'
+  _TIDB_PORT: '4000'
+  _TIDB_ENABLE_SSL: 'true'
+
+  # Logging Configuration
   _LOG_LEVEL: 'INFO'
-  _CRON_SECRET: 'PLACEHOLDER'
-  _TELEGRAM_WEBHOOK_SECRET: 'YOUR_VERY_SECRET_RANDOM_STRING_HERE'
+  _LOG_TO_FILE: 'false'
 
 # Build options
 options:

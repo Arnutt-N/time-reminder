@@ -34,6 +34,57 @@ if (envResult.error && !isProd) {
   }
 }
 
+// ENHANCED: Secret Manager integration for production
+// INJECT this after line 24 (environment loading) as specified in PRP Task 2
+let secretManagerLoaded = false;
+
+/**
+ * โหลด secrets จาก Google Cloud Secret Manager สำหรับ production
+ * PATTERN: Conditional production secret loading with fallback
+ * เรียกใช้จาก index.js หลังจาก config ถูกโหลดแล้ว
+ */
+async function loadProductionSecrets() {
+  // ป้องกันการโหลดซ้ำ
+  if (secretManagerLoaded) {
+    console.log("Production secrets already loaded from Secret Manager");
+    return;
+  }
+
+  // ตรวจสอบว่าควรใช้ Secret Manager หรือไม่
+  const isProd = process.env.NODE_ENV === 'production';
+  const skipSecretManager = process.env.SKIP_SECRET_MANAGER === 'true';
+
+  if (!isProd || skipSecretManager) {
+    console.log(`Skipping Secret Manager: production=${isProd}, skip=${skipSecretManager}`);
+    return;
+  }
+
+  try {
+    console.log('🔐 Loading production secrets from Secret Manager...');
+
+    // นำเข้า Secret Manager (ต้องทำใน function เพื่อหลีกเลี่ยง circular dependency)
+    const { initializeSecretManager } = require('./src/secrets/secret-manager');
+
+    // โหลด secrets และตั้งเป็น environment variables
+    const loadedSecrets = await initializeSecretManager();
+
+    secretManagerLoaded = true;
+
+    const successCount = Object.values(loadedSecrets).filter(v => v !== null).length;
+    const totalCount = Object.keys(loadedSecrets).length;
+
+    console.log(`✅ Production secrets loaded successfully: ${successCount}/${totalCount} from Secret Manager`);
+
+  } catch (error) {
+    // CRITICAL: Match existing production validation pattern
+    console.error('❌ Secret Manager loading failed:', error.message);
+    console.error('Continuing with environment variables (may cause issues if secrets are missing)');
+
+    // ไม่ exit process - ให้ validation checks จัดการ missing secrets
+    // สำคัญ: ให้แอปพลิเคชันทำงานต่อได้แม้ Secret Manager จะล้มเหลว
+  }
+}
+
 // กำหนดค่าเริ่มต้นสำหรับทุกสภาพแวดล้อม
 const defaultConfig = {
   // ค่าทั่วไป - Cloud Run uses PORT=8080 by default
@@ -212,4 +263,6 @@ if (config.isProduction) {
   console.log("✅ All required secrets validated successfully")
 }
 
+// Export config และ Secret Manager loading function
 module.exports = config
+module.exports.loadProductionSecrets = loadProductionSecrets

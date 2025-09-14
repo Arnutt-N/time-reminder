@@ -12,6 +12,7 @@
         "verify-env": "node -e \"const config = require('./config'); console.log('✅ Environment:', config.env); console.log('✅ Port:', config.port); console.log('✅ Database:', config.database.host); console.log('✅ Timezone:', config.timezone); console.log('✅ Config loaded successfully!');\""
     },
     "dependencies": {
+        "@google-cloud/secret-manager": "^6.1.0",
         "cross-env": "^7.0.3",
         "dayjs": "^1.11.13",
         "dotenv": "^16.3.1",
