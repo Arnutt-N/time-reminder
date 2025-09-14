@@ -10,7 +10,8 @@ steps:
     args:
       - '-c'
       - |
-        gsutil -m cp -r gs://$PROJECT_ID_cache/node_modules . || true
+        # Use curly braces to correctly separate the variable from the text
+        gsutil -m cp -r gs://${PROJECT_ID}_cache/node_modules . || true # <-- CORRECTED
     waitFor: ['-'] # Start immediately
 
   # STEP 1: Build Image (Modified to use cache)
@@ -41,13 +42,11 @@ steps:
     args:
       - '-c'
       - |
-        # This step runs in parallel with pushing the image
         if [ -d "node_modules" ]; then
-          gsutil -m rsync -r node_modules gs://$PROJECT_ID_cache/node_modules
+          # Use curly braces to correctly separate the variable from the text
+          gsutil -m rsync -r node_modules gs://${PROJECT_ID}_cache/node_modules # <-- CORRECTED
         fi
-    waitFor: ['build-image'] # Start as soon as the image is built
-
-  # --- Deployment steps remain the same ---
+    waitFor: ['build-image']
 
   # 4) Deploy to Cloud Run WITHOUT traffic
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -84,7 +83,10 @@ steps:
         NODE_ENV=production,
         TZ=Asia/Bangkok,
         GOOGLE_CLOUD_REGION=asia-southeast1,
+        TIDB_HOST=${_TIDB_HOST},
         TIDB_PORT=${_TIDB_PORT},
+        TIDB_USER=${_TIDB_USER},
+        TIDB_PASSWORD=${_TIDB_PASSWORD},
         TIDB_DATABASE=${_TIDB_DATABASE},
         TIDB_ENABLE_SSL=${_TIDB_ENABLE_SSL},
         LOG_LEVEL=${_LOG_LEVEL},
@@ -93,13 +95,10 @@ steps:
         TELEGRAM_CHAT_ID=${_TELEGRAM_CHAT_ID},
         ADMIN_CHAT_ID=${_ADMIN_CHAT_ID},
         TELEGRAM_WEBHOOK_SECRET=${_TELEGRAM_WEBHOOK_SECRET},
-        CRON_SECRET=${_CRON_SECRET},
-        TIDB_HOST=${_TIDB_HOST},
-        TIDB_USER=${_TIDB_USER},
-        TIDB_PASSWORD=${_TIDB_PASSWORD}
+        CRON_SECRET=${_CRON_SECRET}
     waitFor: ['push-image']
 
-  # 5) Get URL and update service with APP_URL
+  # 5) Get URL and update the service with APP_URL
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'set-app-url'
     entrypoint: 'bash'
@@ -128,7 +127,7 @@ steps:
       - 'asia-southeast1'
     waitFor: ['set-app-url']
 
-  # 7) Delegate Webhook Setup (No change)
+  # 7) Delegate Webhook Setup
   - name: 'gcr.io/cloud-builders/curl'
     id: 'set-telegram-webhook'
     entrypoint: 'bash'
@@ -138,10 +137,9 @@ steps:
         SERVICE_URL=$$(cat /workspace/service_url.txt)
         echo "📝 Service URL ready: $$SERVICE_URL"
         echo "🔗 Telegram webhook will be configured by the application on startup"
-        echo "✅ Webhook setup delegated to application"
     waitFor: ['update-traffic']
 
-  # 8) Health check (No change)
+  # 8) Health check
   - name: 'gcr.io/cloud-builders/curl'
     id: 'health-check'
     entrypoint: 'bash'
@@ -180,10 +178,10 @@ substitutions:
   _LOG_LEVEL: 'INFO'
   _LOG_TO_FILE: 'false'
 
-# Build options - COST SAVING
+# Build options
 options:
-  logging: 'CLOUD_LOGGING_ONLY'
   machineType: 'E2_MEDIUM'
+  logging: 'CLOUD_LOGGING_ONLY'
 
 timeout: '1200s'
 
@@ -195,3 +193,4 @@ tags:
   - 'telegram-bot'
   - 'cloud-run'
   - 'production'
+
