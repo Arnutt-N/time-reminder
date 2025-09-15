@@ -1,37 +1,65 @@
-# Optimized scheduled reminders workflow
+# This workflow triggers reminders on a schedule or manually for specific environments.
 
 name: Scheduled Telegram Reminders
 
 on:
+  # Manual trigger that lets you choose the environment to run against
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to run on'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+        - development
+        - production
+
+  # Scheduled triggers will ALWAYS run against the 'production' environment
   schedule:
-    # Morning Times (in UTC, corresponding to 07:25, 08:25, 09:25 Thai time)
-    - cron: '25 0 * * 1-5'
-    - cron: '25 1 * * 1-5'
-    - cron: '25 2 * * 1-5'
-    # Afternoon Times (in UTC, corresponding to 15:30, 16:30, 17:30 Thai time)
-    - cron: '30 8 * * 1-5'
-    - cron: '30 9 * * 1-5'
-    - cron: '30 10 * * 1-5'
-  workflow_dispatch: {}
+    - cron: '25 0 * * 1-5'   # 07:25 TH
+    - cron: '25 1 * * 1-5'   # 08:25 TH
+    - cron: '25 2 * * 1-5'   # 09:25 TH
+    - cron: '30 8 * * 1-5'   # 15:30 TH
+    - cron: '30 9 * * 1-5'   # 16:30 TH
+    - cron: '30 10 * * 1-5'  # 17:30 TH
 
 jobs:
   trigger-reminders:
+    # Use the manually selected environment from workflow_dispatch,
+    # or default to 'production' for scheduled runs.
+    environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'production' }}
+    
     runs-on: ubuntu-latest
-    name: Trigger Scheduled Reminder
+    name: Trigger Reminder (${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'production' }})
+    
     env:
+      # These secrets will be securely pulled from the selected GitHub Environment
       APP: ${{ secrets.CLOUD_RUN_URL }}
       TOKEN: ${{ secrets.CRON_SECRET }}
 
     steps:
+      - name: 'Debug Secrets'
+        run: |
+          echo "Verifying secrets for environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'production' }}"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::CRON_SECRET is empty or not found in the selected environment's secrets!"
+            exit 1
+          fi
+          SECRET_LENGTH=${#TOKEN}
+          FIRST_TWO_CHARS=${TOKEN:0:2}
+          LAST_TWO_CHARS=${TOKEN: -2}
+          echo "Secret is present. Length: $SECRET_LENGTH characters."
+          echo "First 2 chars: '$FIRST_TWO_CHARS'"
+          echo "Last 2 chars: '$LAST_TWO_CHARS'"
+
       - name: Send POST Request to /api/cron
         run: |
-          # Determine the reminder type (morning/evening) based on the cron trigger
           REMINDER_TYPE="morning"
           if [[ "${{ github.event.schedule }}" == "30 "* ]]; then
             REMINDER_TYPE="evening"
           fi
           
-          # Convert UTC cron time back to Thai time for the payload
           UTC_HOUR=$(echo "${{ github.event.schedule }}" | cut -d' ' -f2)
           THAI_HOUR=$(printf %02d $(((UTC_HOUR + 7) % 24)))
           MINUTE=$(echo "${{ github.event.schedule }}" | cut -d' ' -f1)
@@ -39,8 +67,6 @@ jobs:
 
           echo "Triggering '$REMINDER_TYPE' reminder for Thai time: $THAI_TIME"
 
-          # Use --fail to automatically exit with an error code if HTTP response is not 2xx
-          # Use --max-time 60 to allow for Cloud Run cold starts
           curl --fail --max-time 60 -sS \
             -X POST \
             -H "Authorization: Bearer $TOKEN" \
