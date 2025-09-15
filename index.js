@@ -31,7 +31,7 @@ dayjs.extend(timezone)
 const THAI_TIMEZONE = "Asia/Bangkok"
 
 // กำหนดตัวแปรสำคัญจาก config - จะถูกตั้งค่าหลัง loadProductionSecrets()
-let token, chatId, appUrl, port, HOLIDAYS_FILE, WEBHOOK_SECRET;
+let token, chatId, appUrl, port, HOLIDAYS_FILE, WEBHOOK_SECRET
 
 // ตัวแปรสถานะการเริ่มต้น
 let botInitialized = false
@@ -44,12 +44,13 @@ let cronJobsInitialized = false
 let hasStarted = false
 let isTestCronRunning = false
 let testCron = null
+let databaseInitialized = false
 
 // สร้าง Express app
 const app = express()
 
 // Security enhancements: JSON body limits to prevent DoS attacks
-app.use(express.json({ limit: '256kb' }))
+app.use(express.json({ limit: "256kb" }))
 
 // Rate limiting for API endpoints
 const apiLimiter = rateLimit({
@@ -57,7 +58,7 @@ const apiLimiter = rateLimit({
   max: 100, // limit each IP to 100 requests per windowMs
   message: {
     error: "Too many requests from this IP, please try again later.",
-    retry_after: "15 minutes"
+    retry_after: "15 minutes",
   },
   standardHeaders: true,
   legacyHeaders: false,
@@ -68,15 +69,15 @@ const cronLimiter = rateLimit({
   max: 10, // limit each IP to 10 requests per minute for cron endpoint
   message: {
     error: "Too many cron requests, please try again later.",
-    retry_after: "1 minute"  
+    retry_after: "1 minute",
   },
   standardHeaders: true,
   legacyHeaders: false,
 })
 
 // Apply rate limiting to specific endpoints
-app.use('/api/cron', cronLimiter)
-app.use('/api', apiLimiter)
+app.use("/api/cron", cronLimiter)
+app.use("/api", apiLimiter)
 
 // root เพื่อกัน 404 เวลา health/manual open
 app.get("/", (_req, res) => {
@@ -113,6 +114,7 @@ async function initializeApp() {
     // เริ่มต้นฐานข้อมูล
     botLog(LOG_LEVELS.INFO, "initializeApp", "กำลังเริ่มต้นฐานข้อมูล...")
     await initializeDatabase()
+    databaseInitialized = true
     botLog(LOG_LEVELS.INFO, "initializeApp", "เริ่มต้นฐานข้อมูลสำเร็จ")
 
     // แสดงข้อมูลเวลาปัจจุบันของระบบ
@@ -133,48 +135,80 @@ async function initializeApp() {
       app
         .listen(port, async () => {
           try {
-             // ค่อย ๆ ทำงานหนักภายหลังแบบไม่ kill โปรเซส
-            holidaysData = loadHolidays();
-            try { await initializeDatabase(); } catch(e){ logError('initializeDatabase', e); }
-            
+            // ค่อย ๆ ทำงานหนักภายหลังแบบไม่ kill โปรเซส
+            holidaysData = loadHolidays()
+            try {
+              await initializeDatabase()
+            } catch (e) {
+              logError("initializeDatabase", e)
+            }
+
             // สร้าง bot instance หลังจาก server ฟังพอร์ตแล้ว (ป้องกัน Cloud Run startup failure)
             try {
-              botLog(LOG_LEVELS.INFO, "initializeApp", "กำลังสร้าง Telegram Bot instance")
+              botLog(
+                LOG_LEVELS.INFO,
+                "initializeApp",
+                "กำลังสร้าง Telegram Bot instance"
+              )
               bot = new TelegramBot(token, { polling: false })
-              botLog(LOG_LEVELS.INFO, "initializeApp", "สร้าง Telegram Bot instance สำเร็จ")
+              botLog(
+                LOG_LEVELS.INFO,
+                "initializeApp",
+                "สร้าง Telegram Bot instance สำเร็จ"
+              )
             } catch (botError) {
-              botLog(LOG_LEVELS.ERROR, "initializeApp", `ไม่สามารถสร้าง Telegram Bot: ${botError.message}`)
+              botLog(
+                LOG_LEVELS.ERROR,
+                "initializeApp",
+                `ไม่สามารถสร้าง Telegram Bot: ${botError.message}`
+              )
               // ไม่ยกเลิกการทำงาน - ให้ server ทำงานต่อเพื่อ health checks
               return resolve() // ส่งคืนสำเร็จแต่ไม่มี bot
             }
-            
+
             // ENHANCED webhook configuration with validation and verification
             botLog(LOG_LEVELS.INFO, "initializeApp", "กำลังลบ webhook เดิม")
             await bot.deleteWebHook()
-            
+
             const _url = `${appUrl}/bot${token}`
-            const maskedUrl = `${appUrl}/bot${token.substring(0, 10)}***MASKED***`
-            
+            const maskedUrl = `${appUrl}/bot${token.substring(
+              0,
+              10
+            )}***MASKED***`
+
             // Validate webhook URL format
-            if (!appUrl.startsWith('https://')) {
+            if (!appUrl.startsWith("https://")) {
               const errorMsg = "APP_URL must use HTTPS for webhook"
               botLog(LOG_LEVELS.ERROR, "initializeApp", errorMsg)
               return reject(new Error(errorMsg))
             }
-            
-            botLog(LOG_LEVELS.INFO, "initializeApp", `กำลังตั้งค่า webhook ใหม่: ${maskedUrl}`)
-            
+
+            botLog(
+              LOG_LEVELS.INFO,
+              "initializeApp",
+              `กำลังตั้งค่า webhook ใหม่: ${maskedUrl}`
+            )
+
             const webhookOptions = {
-              allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member'],
+              allowed_updates: [
+                "message",
+                "callback_query",
+                "chat_member",
+                "my_chat_member",
+              ],
               drop_pending_updates: true,
-              max_connections: 40
+              max_connections: 40,
             }
-            
+
             if (WEBHOOK_SECRET) {
               webhookOptions.secret_token = WEBHOOK_SECRET
-              botLog(LOG_LEVELS.DEBUG, "initializeApp", "Webhook secret token configured")
+              botLog(
+                LOG_LEVELS.DEBUG,
+                "initializeApp",
+                "Webhook secret token configured"
+              )
             }
-            
+
             const webhookResult = await bot.setWebHook(_url, webhookOptions)
 
             if (!webhookResult) {
@@ -182,20 +216,36 @@ async function initializeApp() {
               botLog(LOG_LEVELS.ERROR, "initializeApp", errorMsg)
               return reject(new Error(errorMsg))
             }
-            
+
             // Verify webhook was set correctly
             try {
               const webhookInfo = await bot.getWebhookInfo()
               if (webhookInfo.url !== _url) {
-                botLog(LOG_LEVELS.WARN, "initializeApp", "Webhook URL mismatch detected", {
-                  expected: maskedUrl,
-                  actual: webhookInfo.url ? `${webhookInfo.url.substring(0, 20)}***MASKED***` : 'none'
-                })
+                botLog(
+                  LOG_LEVELS.WARN,
+                  "initializeApp",
+                  "Webhook URL mismatch detected",
+                  {
+                    expected: maskedUrl,
+                    actual: webhookInfo.url
+                      ? `${webhookInfo.url.substring(0, 20)}***MASKED***`
+                      : "none",
+                  }
+                )
               } else {
-                botLog(LOG_LEVELS.INFO, "initializeApp", "Webhook verification successful")
+                botLog(
+                  LOG_LEVELS.INFO,
+                  "initializeApp",
+                  "Webhook verification successful"
+                )
               }
             } catch (verifyError) {
-              botLog(LOG_LEVELS.WARN, "initializeApp", "Webhook verification failed", verifyError.message)
+              botLog(
+                LOG_LEVELS.WARN,
+                "initializeApp",
+                "Webhook verification failed",
+                verifyError.message
+              )
             }
 
             botInitialized = true
@@ -204,7 +254,10 @@ async function initializeApp() {
               "initializeApp",
               `เซิร์ฟเวอร์ทำงานที่พอร์ต ${port}`
             )
-            const maskedWebhookUrl = `${appUrl}/bot${token.substring(0, 10)}***MASKED***`
+            const maskedWebhookUrl = `${appUrl}/bot${token.substring(
+              0,
+              10
+            )}***MASKED***`
             botLog(
               LOG_LEVELS.INFO,
               "initializeApp",
@@ -220,12 +273,20 @@ async function initializeApp() {
             )
 
             // ตั้งค่า cron jobs (เฉพาะโหมด internal)
-            const cronMode = process.env.CRON_MODE || 'external'
-            if (cronMode === 'internal') {
+            const cronMode = process.env.CRON_MODE || "external"
+            if (cronMode === "internal") {
               setupCronJobs()
-              botLog(LOG_LEVELS.INFO, "initializeApp", "ตั้งค่า internal cron jobs สำเร็จ")
+              botLog(
+                LOG_LEVELS.INFO,
+                "initializeApp",
+                "ตั้งค่า internal cron jobs สำเร็จ"
+              )
             } else {
-              botLog(LOG_LEVELS.INFO, "initializeApp", `ใช้ external scheduler (${cronMode}) - ข้าม internal cron jobs`)
+              botLog(
+                LOG_LEVELS.INFO,
+                "initializeApp",
+                `ใช้ external scheduler (${cronMode}) - ข้าม internal cron jobs`
+              )
             }
 
             // ส่งข้อความแจ้งเตือนไปยังแอดมินว่าบอทเริ่มทำงานแล้ว
@@ -250,7 +311,7 @@ async function initializeApp() {
                 )
 
                 // สั่งจำลองคำสั่ง /start ให้กับแอดมิน (เฉพาะใน development)
-                if (process.env.SIMULATE_START_ON_BOOT === 'true') {
+                if (process.env.SIMULATE_START_ON_BOOT === "true") {
                   const simulatedMessage = {
                     message_id: Date.now(),
                     from: {
@@ -277,7 +338,9 @@ async function initializeApp() {
                   botLog(
                     LOG_LEVELS.INFO,
                     "initializeApp",
-                    `ข้าม startup simulation (SIMULATE_START_ON_BOOT=${process.env.SIMULATE_START_ON_BOOT || 'false'})`
+                    `ข้าม startup simulation (SIMULATE_START_ON_BOOT=${
+                      process.env.SIMULATE_START_ON_BOOT || "false"
+                    })`
                   )
                 }
               } else {
@@ -328,42 +391,65 @@ async function startApplication() {
     botLog(LOG_LEVELS.INFO, "startApplication", "เริ่มต้นการทำงานของโปรแกรม")
 
     // CRITICAL: Load production secrets before accessing config values
-    botLog(LOG_LEVELS.INFO, "startApplication", "🔐 Loading production secrets...")
+    botLog(
+      LOG_LEVELS.INFO,
+      "startApplication",
+      "🔐 Loading production secrets..."
+    )
     await config.loadProductionSecrets()
 
     // Initialize config variables after secrets are loaded
-    token = config.telegramBotToken;
-    chatId = config.telegramChatId;
-    appUrl = config.appUrl;
-    port = config.port;
-    HOLIDAYS_FILE = config.holidaysFile;
-    WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || "";
+    token = config.telegramBotToken
+    chatId = config.telegramChatId
+    appUrl = config.appUrl
+    port = config.port
+    HOLIDAYS_FILE = config.holidaysFile
+    WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || ""
 
-    botLog(LOG_LEVELS.INFO, "startApplication", "✅ Configuration initialized with secrets")
+    botLog(
+      LOG_LEVELS.INFO,
+      "startApplication",
+      "✅ Configuration initialized with secrets"
+    )
 
     // Validate configuration after secrets are loaded
     if (!chatId) {
-      botLog(LOG_LEVELS.WARN, "startApplication",
-        "TELEGRAM_CHAT_ID is not set. Messages will only be sent to individual subscribers.")
+      botLog(
+        LOG_LEVELS.WARN,
+        "startApplication",
+        "TELEGRAM_CHAT_ID is not set. Messages will only be sent to individual subscribers."
+      )
     }
 
     // Auto-generate APP_URL for Cloud Run if not provided
     if (!process.env.APP_URL) {
-      const region = process.env.GOOGLE_CLOUD_REGION || 'us-central1'
+      const region = process.env.GOOGLE_CLOUD_REGION || "us-central1"
       const projectId = process.env.GOOGLE_CLOUD_PROJECT
-      const serviceName = process.env.K_SERVICE || 'telegram-reminder-bot'
+      const serviceName = process.env.K_SERVICE || "telegram-reminder-bot"
 
       if (projectId && region) {
         const generatedUrl = `https://${serviceName}-${projectId}.${region}.run.app`
         process.env.APP_URL = generatedUrl
         appUrl = generatedUrl
 
-        botLog(LOG_LEVELS.INFO, "startApplication", `🔗 Auto-generated APP_URL: ${generatedUrl}`)
+        botLog(
+          LOG_LEVELS.INFO,
+          "startApplication",
+          `🔗 Auto-generated APP_URL: ${generatedUrl}`
+        )
       } else {
-        botLog(LOG_LEVELS.WARN, "startApplication", "Cannot auto-generate APP_URL: missing project info")
+        botLog(
+          LOG_LEVELS.WARN,
+          "startApplication",
+          "Cannot auto-generate APP_URL: missing project info"
+        )
       }
     } else {
-      botLog(LOG_LEVELS.INFO, "startApplication", `📍 Using provided APP_URL: ${appUrl}`)
+      botLog(
+        LOG_LEVELS.INFO,
+        "startApplication",
+        `📍 Using provided APP_URL: ${appUrl}`
+      )
     }
 
     // Register webhook endpoint AFTER token is loaded
@@ -375,7 +461,11 @@ async function startApplication() {
           if (WEBHOOK_SECRET) {
             const header = req.get("X-Telegram-Bot-Api-Secret-Token")
             if (!header || header !== WEBHOOK_SECRET) {
-              botLog(LOG_LEVELS.WARN, "webhook", "Unauthorized webhook (secret mismatch)")
+              botLog(
+                LOG_LEVELS.WARN,
+                "webhook",
+                "Unauthorized webhook (secret mismatch)"
+              )
               return res.sendStatus(401)
             }
           }
@@ -400,28 +490,42 @@ async function startApplication() {
       })
 
       webhookEndpointRegistered = true
-      botLog(LOG_LEVELS.INFO, "startApplication", `🔗 Webhook endpoint registered: ${webhookPath}`)
+      botLog(
+        LOG_LEVELS.INFO,
+        "startApplication",
+        `🔗 Webhook endpoint registered: ${webhookPath}`
+      )
     }
 
     // Critical environment variable validation
     function validateCriticalEnvironment() {
-      const required = ['TELEGRAM_BOT_TOKEN', 'APP_URL']
-      const missing = required.filter(key => !process.env[key])
+      const required = ["TELEGRAM_BOT_TOKEN", "APP_URL"]
+      const missing = required.filter((key) => !process.env[key])
 
       if (missing.length > 0) {
-        const errorMsg = `Missing critical environment variables: ${missing.join(', ')}`
+        const errorMsg = `Missing critical environment variables: ${missing.join(
+          ", "
+        )}`
         botLog(LOG_LEVELS.ERROR, "startApplication", errorMsg)
         throw new Error(errorMsg)
       }
 
-      botLog(LOG_LEVELS.INFO, "startApplication", "✅ All critical environment variables validated")
+      botLog(
+        LOG_LEVELS.INFO,
+        "startApplication",
+        "✅ All critical environment variables validated"
+      )
     }
 
     // Validate critical environment variables
     try {
       validateCriticalEnvironment()
     } catch (error) {
-      botLog(LOG_LEVELS.ERROR, "startApplication", `❌ Environment validation failed: ${error.message}`)
+      botLog(
+        LOG_LEVELS.ERROR,
+        "startApplication",
+        `❌ Environment validation failed: ${error.message}`
+      )
       throw error
     }
 
@@ -499,50 +603,73 @@ async function startApplication() {
     async function validateStartupSequence() {
       const checks = [
         { name: "Config module loaded", check: () => !!config },
-        { name: "Production secrets loaded", check: () => !!process.env.TELEGRAM_BOT_TOKEN },
+        {
+          name: "Production secrets loaded",
+          check: () => !!process.env.TELEGRAM_BOT_TOKEN,
+        },
         { name: "Bot token assigned", check: () => !!token },
         { name: "App URL configured", check: () => !!appUrl },
         { name: "Bot instance created", check: () => !!bot },
         { name: "Database initialized", check: () => databaseInitialized },
         { name: "Event handlers setup", check: () => eventHandlersInitialized },
-        { name: "Webhook configured", check: async () => {
-          if (!bot) return false
-          try {
-            const info = await bot.getWebhookInfo()
-            return !!info.url && info.url.includes(token)
-          } catch (error) {
-            return false
-          }
-        }}
+        {
+          name: "Webhook configured",
+          check: async () => {
+            if (!bot) return false
+            try {
+              const info = await bot.getWebhookInfo()
+              return !!info.url && info.url.includes(token)
+            } catch (error) {
+              return false
+            }
+          },
+        },
       ]
 
-      botLog(LOG_LEVELS.INFO, "startup-validation", "🔍 Starting comprehensive startup validation...")
+      botLog(
+        LOG_LEVELS.INFO,
+        "startup-validation",
+        "🔍 Starting comprehensive startup validation..."
+      )
 
       const results = []
       for (const test of checks) {
         try {
-          const result = typeof test.check === 'function' ? await test.check() : test.check
+          const result =
+            typeof test.check === "function" ? await test.check() : test.check
           const status = result ? "✅" : "❌"
           const message = `${status} ${test.name}: ${result}`
 
           botLog(LOG_LEVELS.INFO, "startup-validation", message)
           results.push({ name: test.name, passed: result, status })
-
         } catch (error) {
           const message = `❌ ${test.name}: ERROR - ${error.message}`
           botLog(LOG_LEVELS.ERROR, "startup-validation", message)
-          results.push({ name: test.name, passed: false, error: error.message, status: "❌" })
+          results.push({
+            name: test.name,
+            passed: false,
+            error: error.message,
+            status: "❌",
+          })
         }
       }
 
-      const passed = results.filter(r => r.passed).length
+      const passed = results.filter((r) => r.passed).length
       const total = results.length
       const successRate = Math.round((passed / total) * 100)
 
       if (successRate === 100) {
-        botLog(LOG_LEVELS.INFO, "startup-validation", `🎉 All startup checks passed (${passed}/${total})`)
+        botLog(
+          LOG_LEVELS.INFO,
+          "startup-validation",
+          `🎉 All startup checks passed (${passed}/${total})`
+        )
       } else {
-        botLog(LOG_LEVELS.WARN, "startup-validation", `⚠️ Startup validation: ${passed}/${total} passed (${successRate}%)`)
+        botLog(
+          LOG_LEVELS.WARN,
+          "startup-validation",
+          `⚠️ Startup validation: ${passed}/${total} passed (${successRate}%)`
+        )
       }
 
       return { results, passed, total, successRate }
@@ -753,7 +880,6 @@ async function isHoliday() {
 
     // ตรวจสอบวันหยุดพิเศษจากฐานข้อมูล
     try {
-      const { getConnection } = require("./tidb-connection.js") // นำเข้าแบบมีเงื่อนไข
       let conn = await getConnection()
       const [rows] = await conn.query(
         "SELECT * FROM holidays WHERE holiday_date = ?",
@@ -815,19 +941,41 @@ function getEveningMessage() {
 
 // MarkdownV2 utility functions for safe message formatting
 function escapeMarkdownV2(text) {
-  if (typeof text !== 'string') {
+  if (typeof text !== "string") {
     return String(text)
   }
-  
+
   // MarkdownV2 special characters that need to be escaped
-  const specialChars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
-  
+  const specialChars = [
+    "_",
+    "*",
+    "[",
+    "]",
+    "(",
+    ")",
+    "~",
+    "`",
+    ">",
+    "#",
+    "+",
+    "-",
+    "=",
+    "|",
+    "{",
+    "}",
+    ".",
+    "!",
+  ]
+
   let escaped = text
   for (const char of specialChars) {
-    const regex = new RegExp('\\' + char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')
-    escaped = escaped.replace(regex, '\\' + char)
+    const regex = new RegExp(
+      "\\" + char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      "g"
+    )
+    escaped = escaped.replace(regex, "\\" + char)
   }
-  
+
   return escaped
 }
 
@@ -840,7 +988,7 @@ function formatMarkdownV2Italic(text) {
 }
 
 function formatMarkdownV2Code(text) {
-  return `\`${text.replace(/`/g, '\\`')}\``
+  return `\`${text.replace(/`/g, "\\`")}\``
 }
 
 // เพิ่ม endpoints สำหรับ health check
@@ -852,28 +1000,28 @@ app.get("/ping", (req, res) => {
 // Cloud Run readiness probe endpoint - fast response (<100ms)
 app.get("/readiness", (req, res) => {
   // Simple check - server can accept traffic
-  res.status(200).json({ 
-    ready: true, 
+  res.status(200).json({
+    ready: true,
     timestamp: new Date().toISOString(),
-    service: process.env.K_SERVICE || "telegram-reminder-bot"
+    service: process.env.K_SERVICE || "telegram-reminder-bot",
   })
 })
 
 app.get("/health", async (req, res) => {
   try {
     const serverTimeInfo = getServerTimeInfo()
-    
+
     // Test database connection
     let databaseStatus = "disconnected"
     try {
       const dbConnection = await getConnection()
-      await dbConnection.query('SELECT 1')
+      await dbConnection.query("SELECT 1")
       await dbConnection.end()
       databaseStatus = "connected"
     } catch (dbError) {
       databaseStatus = "failed"
     }
-    
+
     // Test Telegram API
     let telegramApiStatus = "disconnected"
     try {
@@ -882,24 +1030,27 @@ app.get("/health", async (req, res) => {
     } catch (telegramError) {
       telegramApiStatus = "failed"
     }
-    
-    // ENHANCED webhook status detection  
+
+    // ENHANCED webhook status detection
     let webhookStatus = "inactive"
     let webhookDetails = {}
-    
+
     try {
       const webhookInfo = await bot.getWebhookInfo()
-      const expectedUrl = `${process.env.APP_URL}/bot${process.env.TELEGRAM_BOT_TOKEN}`
-      
+      const expectedUrl = `${appUrl}/bot${token}`
+
       if (webhookInfo.url) {
         // Check if webhook URL matches current configuration
         if (webhookInfo.url === expectedUrl) {
           // Check if webhook has received updates recently (last 5 minutes)
-          const lastErrorDate = webhookInfo.last_error_date ? 
-            new Date(webhookInfo.last_error_date * 1000) : null
+          const lastErrorDate = webhookInfo.last_error_date
+            ? new Date(webhookInfo.last_error_date * 1000)
+            : null
           const now = new Date()
-          const timeDiff = lastErrorDate ? (now - lastErrorDate) / 1000 : Infinity
-          
+          const timeDiff = lastErrorDate
+            ? (now - lastErrorDate) / 1000
+            : Infinity
+
           if (!webhookInfo.last_error_message || timeDiff > 300) {
             webhookStatus = "ok"
           } else {
@@ -912,7 +1063,7 @@ app.get("/health", async (req, res) => {
           webhookDetails.expected = expectedUrl
           webhookDetails.actual = webhookInfo.url
         }
-        
+
         // Add webhook details for monitoring
         webhookDetails.pendingUpdates = webhookInfo.pending_update_count || 0
         webhookDetails.maxConnections = webhookInfo.max_connections || 0
@@ -942,7 +1093,7 @@ app.get("/health", async (req, res) => {
         webhook: webhookStatus,
         webhook_details: webhookDetails,
         cron_jobs: cronJobsInitialized || false,
-        timezone: dayjs().tz(THAI_TIMEZONE).format()
+        timezone: dayjs().tz(THAI_TIMEZONE).format(),
       },
       server_time: {
         utc: serverTimeInfo.utcTime,
@@ -950,37 +1101,41 @@ app.get("/health", async (req, res) => {
         offset: serverTimeInfo.offset,
       },
     }
-    
+
     // Structured logging for Cloud Run (single line payload)
-    console.log(JSON.stringify({
-      severity: 'INFO',
-      component: 'health-check',
-      ...healthData
-    }))
+    console.log(
+      JSON.stringify({
+        severity: "INFO",
+        component: "health-check",
+        ...healthData,
+      })
+    )
     res.status(200).json(healthData)
   } catch (error) {
     logError("health", error)
-    
+
     const errorData = {
       status: "error",
       platform: "google-cloud-run",
       service: process.env.K_SERVICE,
       error: error.message,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     }
-    
+
     // Structured error logging for Cloud Run
     if (config.cloudRun.isCloudRun) {
-      console.log(JSON.stringify({
-        timestamp: new Date().toISOString(),
-        severity: 'ERROR',
-        component: 'health-check', 
-        message: 'Health check failed',
-        error: error.message,
-        service: process.env.K_SERVICE
-      }))
+      console.log(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          severity: "ERROR",
+          component: "health-check",
+          message: "Health check failed",
+          error: error.message,
+          service: process.env.K_SERVICE,
+        })
+      )
     }
-    
+
     res.status(500).json(errorData)
   }
 })
@@ -993,7 +1148,7 @@ app.get("/webhook-status", async (req, res) => {
     if (!bot) {
       return res.status(503).json({
         status: "error",
-        message: "Bot instance not initialized"
+        message: "Bot instance not initialized",
       })
     }
 
@@ -1008,9 +1163,9 @@ app.get("/webhook-status", async (req, res) => {
         expectedUrl: expectedUrl,
         actualUrl: webhookInfo.url,
         pendingUpdates: webhookInfo.pending_update_count,
-        lastError: webhookInfo.last_error_message || null
+        lastError: webhookInfo.last_error_message || null,
       },
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     }
 
     // Return error status if webhook not properly configured
@@ -1023,7 +1178,7 @@ app.get("/webhook-status", async (req, res) => {
     logError("webhook-status", error)
     res.status(503).json({
       status: "error",
-      message: error.message
+      message: error.message,
     })
   }
 })
@@ -1036,7 +1191,7 @@ app.get("/bot-health", async (req, res) => {
       token: !!token,
       appUrl: !!appUrl,
       webhookSecret: !!WEBHOOK_SECRET,
-      eventHandlers: eventHandlersInitialized
+      eventHandlers: eventHandlersInitialized,
     }
 
     let status = "ok"
@@ -1068,14 +1223,13 @@ app.get("/bot-health", async (req, res) => {
       checks,
       issues,
       botInfo,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     })
-
   } catch (error) {
     logError("bot-health", error)
     res.status(503).json({
       status: "error",
-      message: error.message
+      message: error.message,
     })
   }
 })
@@ -1084,9 +1238,13 @@ app.get("/bot-health", async (req, res) => {
 app.get("/debug/env", (req, res) => {
   try {
     // Security: Only allow in development environment
-    if (process.env.NODE_ENV !== 'development') {
-      botLog(LOG_LEVELS.WARN, "debug-env", `Unauthorized access attempt from ${req.ip}`)
-      return res.status(404).send('Not Found')
+    if (process.env.NODE_ENV !== "development") {
+      botLog(
+        LOG_LEVELS.WARN,
+        "debug-env",
+        `Unauthorized access attempt from ${req.ip}`
+      )
+      return res.status(404).send("Not Found")
     }
 
     // Safe environment variable status (no actual values)
@@ -1103,12 +1261,11 @@ app.get("/debug/env", (req, res) => {
       region: process.env.GOOGLE_CLOUD_REGION,
       projectId: process.env.GOOGLE_CLOUD_PROJECT,
       serviceName: process.env.K_SERVICE,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     }
 
     botLog(LOG_LEVELS.INFO, "debug-env", "Environment debug info requested")
     res.json(debugInfo)
-
   } catch (error) {
     logError("debug-env", error)
     res.status(500).json({ error: "Debug endpoint failed" })
@@ -1120,7 +1277,8 @@ app.get("/debug/env", (req, res) => {
 // เส้นทางสำหรับการตั้งค่า webhook
 app.get("/webhook-info", async (req, res) => {
   try {
-    const info = await bot.getWebHookInfo()
+    if (!bot) return res.status(503).json({ error: "Bot not initialized" })
+    const info = await bot.getWebhookInfo()
     console.log("Current webhook info:", info)
     res.json(info)
   } catch (error) {
@@ -1161,91 +1319,32 @@ app.post("/reset-webhook", async (req, res) => {
 })
 
 // External Cron Endpoint for GitHub Actions
-app.post("/api/cron", async (req, res) => {
+app.post("/api/cron", verifyCronSecret, async (req, res) => {
   try {
-    // ENHANCED authorization validation
-    const authHeader = req.headers.authorization || ""
-    const cronSecret = process.env.CRON_SECRET
-    
-    // Validate secret exists
-    if (!cronSecret) {
-      botLog(LOG_LEVELS.ERROR, "cron-endpoint", "CRON_SECRET not configured")
-      return res.status(500).json({error: "Server configuration error"})
-    }
-    
-    // Timing-safe comparison to prevent timing attacks
-    const expectedAuth = `Bearer ${cronSecret}`
-    if (authHeader.length !== expectedAuth.length || 
-        !crypto.timingSafeEqual(Buffer.from(authHeader), Buffer.from(expectedAuth))) {
-      
-      // Enhanced logging for security audit
-      botLog(LOG_LEVELS.WARN, "cron-endpoint", "Unauthorized cron request", {
-        ip: req.ip,
-        userAgent: req.get('user-agent'),
-        timestamp: new Date().toISOString(),
-        authHeaderLength: authHeader.length,
-        expectedLength: expectedAuth.length
-      })
-      return res.status(401).json({error: "Unauthorized"})
-    }
-    
     const { type, time } = req.body
-    
-    // Request validation with enhanced logging
-    botLog(LOG_LEVELS.INFO, "cron-endpoint", "Authorized cron request received", {
-      type, time, ip: req.ip, userAgent: req.get('user-agent')
-    })
-    
-    // Validate request body
-    if (!type || !time) {
-      return res.status(400).json({error: "Missing required fields: type, time"})
-    }
-    
-    // Validate allowed times for 6-slot system
+
+    const allowedTypes = ["morning", "afternoon", "evening"]
     const allowedTimes = ["07:25", "08:25", "09:25", "15:30", "16:30", "17:30"]
-    if (!allowedTimes.includes(time)) {
-      botLog(LOG_LEVELS.WARN, "cron-endpoint", `Invalid time requested: ${time}`, { 
-        ip: req.ip, 
-        userAgent: req.get('user-agent') 
-      })
-      return res.status(400).json({
-        error: "Invalid time. Allowed times: " + allowedTimes.join(", "),
-        allowed_times: allowedTimes
-      })
+
+    if (!allowedTypes.includes(type) || !allowedTimes.includes(time)) {
+      return res.status(400).json({ error: "Invalid type or time" })
     }
-    
-    if (!['morning', 'afternoon', 'evening'].includes(type)) {
-      return res.status(400).json({error: "Invalid cron type. Must be: morning, afternoon, or evening"})
+
+    // log ให้รู้ว่า authorized แล้ว
+    console.log(`✅ Authorized cron trigger: type=${type}, time=${time}`)
+
+    if (type === "morning") {
+      await sendMorningReminder(time)
+    } else if (type === "afternoon") {
+      await sendAfternoonReminder(time)
+    } else if (type === "evening") {
+      await sendEveningReminder(time)
     }
-    
-    botLog(LOG_LEVELS.INFO, "cron-trigger", `Processing ${type} reminder trigger for ${time}`)
-    
-    // Route to appropriate reminder function
-    switch(type) {
-      case 'morning':
-        await sendMorningReminder()
-        break
-      case 'afternoon':
-        await sendAfternoonReminder()  
-        break
-      case 'evening':
-        await sendEveningReminder()
-        break
-      default:
-        return res.status(400).json({error: "Invalid cron type"})
-    }
-    
-    res.status(200).json({
-      success: true,
-      type: type,
-      time: time,
-      executed_at: new Date().toISOString(),
-      platform: "google-cloud-run"
-    })
-    
-  } catch (error) {
-    logError("cron-endpoint", error)
-    res.status(500).json({error: error.message})
+
+    return res.status(200).json({ status: "ok", type, time })
+  } catch (err) {
+    console.error("cron-endpoint error:", err)
+    return res.status(500).json({ error: "Internal server error" })
   }
 })
 
@@ -1254,31 +1353,51 @@ async function sendMorningReminder() {
   try {
     // Check for holidays
     if (await isHoliday()) {
-      botLog(LOG_LEVELS.INFO, "sendMorningReminder", "วันนี้เป็นวันหยุด ข้ามการส่งข้อความเตือน")
+      botLog(
+        LOG_LEVELS.INFO,
+        "sendMorningReminder",
+        "วันนี้เป็นวันหยุด ข้ามการส่งข้อความเตือน"
+      )
       return
     }
-    
-    botLog(LOG_LEVELS.INFO, "sendMorningReminder", "กำลังส่งข้อความแจ้งเตือนตอนเช้า")
-    
-    const morningMessage = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
-    
+
+    botLog(
+      LOG_LEVELS.INFO,
+      "sendMorningReminder",
+      "กำลังส่งข้อความแจ้งเตือนตอนเช้า"
+    )
+
+    const morningMessage =
+      getMorningMessage() + "\n\n" + getCheckInReminderMessage()
+
     // Send to group/channel and individual subscribers (with deduplication)
     const subscribers = await getSubscribedUsers()
-    const subscriberIds = subscribers.map(user => user.chatId)
+    const subscriberIds = subscribers.map((user) => user.chatId)
     const adminIds = chatId ? [chatId] : []
-    
+
     // ลดความซ้ำซ้อนของผู้รับ
-    const deduplicationResult = deduplicateRecipients(subscriberIds, adminIds, 'sendMorningReminder')
+    const deduplicationResult = deduplicateRecipients(
+      subscriberIds,
+      adminIds,
+      "sendMorningReminder"
+    )
     const uniqueRecipients = deduplicationResult.uniqueRecipients
-    
-    botLog(LOG_LEVELS.INFO, "sendMorningReminder", 
-      `กำลังส่งข้อความไปยัง ${uniqueRecipients.length} คน (จากต้นฉบับ ${deduplicationResult.originalCount} คน)`)
-    
+
+    botLog(
+      LOG_LEVELS.INFO,
+      "sendMorningReminder",
+      `กำลังส่งข้อความไปยัง ${uniqueRecipients.length} คน (จากต้นฉบับ ${deduplicationResult.originalCount} คน)`
+    )
+
     // ส่งข้อความไปยังผู้รับที่ไม่ซ้ำ
     for (const recipientId of uniqueRecipients) {
       try {
         await bot.sendMessage(recipientId, morningMessage)
-        botLog(LOG_LEVELS.DEBUG, "sendMorningReminder", `ส่งข้อความเช้าให้ ${recipientId} สำเร็จ`)
+        botLog(
+          LOG_LEVELS.DEBUG,
+          "sendMorningReminder",
+          `ส่งข้อความเช้าให้ ${recipientId} สำเร็จ`
+        )
       } catch (error) {
         logError("sendMorningReminder-user", error)
       }
@@ -1291,33 +1410,53 @@ async function sendMorningReminder() {
 
 async function sendAfternoonReminder() {
   try {
-    // Check for holidays  
+    // Check for holidays
     if (await isHoliday()) {
-      botLog(LOG_LEVELS.INFO, "sendAfternoonReminder", "วันนี้เป็นวันหยุด ข้ามการส่งข้อความเตือน")
+      botLog(
+        LOG_LEVELS.INFO,
+        "sendAfternoonReminder",
+        "วันนี้เป็นวันหยุด ข้ามการส่งข้อความเตือน"
+      )
       return
     }
-    
-    botLog(LOG_LEVELS.INFO, "sendAfternoonReminder", "กำลังส่งข้อความแจ้งเตือนตอนบ่าย")
-    
-    const afternoonMessage = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
-    
+
+    botLog(
+      LOG_LEVELS.INFO,
+      "sendAfternoonReminder",
+      "กำลังส่งข้อความแจ้งเตือนตอนบ่าย"
+    )
+
+    const afternoonMessage =
+      getMorningMessage() + "\n\n" + getCheckInReminderMessage()
+
     // Send to group/channel and individual subscribers (with deduplication)
     const subscribers = await getSubscribedUsers()
-    const subscriberIds = subscribers.map(user => user.chatId)
+    const subscriberIds = subscribers.map((user) => user.chatId)
     const adminIds = chatId ? [chatId] : []
-    
+
     // ลดความซ้ำซ้อนของผู้รับ
-    const deduplicationResult = deduplicateRecipients(subscriberIds, adminIds, 'sendAfternoonReminder')
+    const deduplicationResult = deduplicateRecipients(
+      subscriberIds,
+      adminIds,
+      "sendAfternoonReminder"
+    )
     const uniqueRecipients = deduplicationResult.uniqueRecipients
-    
-    botLog(LOG_LEVELS.INFO, "sendAfternoonReminder", 
-      `กำลังส่งข้อความไปยัง ${uniqueRecipients.length} คน (จากต้นฉบับ ${deduplicationResult.originalCount} คน)`)
-    
+
+    botLog(
+      LOG_LEVELS.INFO,
+      "sendAfternoonReminder",
+      `กำลังส่งข้อความไปยัง ${uniqueRecipients.length} คน (จากต้นฉบับ ${deduplicationResult.originalCount} คน)`
+    )
+
     // ส่งข้อความไปยังผู้รับที่ไม่ซ้ำ
     for (const recipientId of uniqueRecipients) {
       try {
         await bot.sendMessage(recipientId, afternoonMessage)
-        botLog(LOG_LEVELS.DEBUG, "sendAfternoonReminder", `ส่งข้อความบ่ายให้ ${recipientId} สำเร็จ`)
+        botLog(
+          LOG_LEVELS.DEBUG,
+          "sendAfternoonReminder",
+          `ส่งข้อความบ่ายให้ ${recipientId} สำเร็จ`
+        )
       } catch (error) {
         logError("sendAfternoonReminder-user", error)
       }
@@ -1332,31 +1471,51 @@ async function sendEveningReminder() {
   try {
     // Check for holidays
     if (await isHoliday()) {
-      botLog(LOG_LEVELS.INFO, "sendEveningReminder", "วันนี้เป็นวันหยุด ข้ามการส่งข้อความเตือน")
+      botLog(
+        LOG_LEVELS.INFO,
+        "sendEveningReminder",
+        "วันนี้เป็นวันหยุด ข้ามการส่งข้อความเตือน"
+      )
       return
     }
-    
-    botLog(LOG_LEVELS.INFO, "sendEveningReminder", "กำลังส่งข้อความแจ้งเตือนตอนเย็น")
-    
-    const eveningMessage = getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
-    
+
+    botLog(
+      LOG_LEVELS.INFO,
+      "sendEveningReminder",
+      "กำลังส่งข้อความแจ้งเตือนตอนเย็น"
+    )
+
+    const eveningMessage =
+      getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
+
     // Send to group/channel and individual subscribers (with deduplication)
     const subscribers = await getSubscribedUsers()
-    const subscriberIds = subscribers.map(user => user.chatId)
+    const subscriberIds = subscribers.map((user) => user.chatId)
     const adminIds = chatId ? [chatId] : []
-    
+
     // ลดความซ้ำซ้อนของผู้รับ
-    const deduplicationResult = deduplicateRecipients(subscriberIds, adminIds, 'sendEveningReminder')
+    const deduplicationResult = deduplicateRecipients(
+      subscriberIds,
+      adminIds,
+      "sendEveningReminder"
+    )
     const uniqueRecipients = deduplicationResult.uniqueRecipients
-    
-    botLog(LOG_LEVELS.INFO, "sendEveningReminder", 
-      `กำลังส่งข้อความไปยัง ${uniqueRecipients.length} คน (จากต้นฉบับ ${deduplicationResult.originalCount} คน)`)
-    
+
+    botLog(
+      LOG_LEVELS.INFO,
+      "sendEveningReminder",
+      `กำลังส่งข้อความไปยัง ${uniqueRecipients.length} คน (จากต้นฉบับ ${deduplicationResult.originalCount} คน)`
+    )
+
     // ส่งข้อความไปยังผู้รับที่ไม่ซ้ำ
     for (const recipientId of uniqueRecipients) {
       try {
         await bot.sendMessage(recipientId, eveningMessage)
-        botLog(LOG_LEVELS.DEBUG, "sendEveningReminder", `ส่งข้อความเย็นให้ ${recipientId} สำเร็จ`)
+        botLog(
+          LOG_LEVELS.DEBUG,
+          "sendEveningReminder",
+          `ส่งข้อความเย็นให้ ${recipientId} สำเร็จ`
+        )
       } catch (error) {
         logError("sendEveningReminder-user", error)
       }
@@ -1383,16 +1542,11 @@ function setupCronJobs() {
       "กำลังล้าง cron jobs เดิมและตั้งค่าใหม่"
     )
     try {
-      for (const job of Object.values(cron.getTasks())) {
-        job.stop()
+      const tasks = cron.getTasks?.()
+      if (tasks && typeof tasks.forEach === "function") {
+        tasks.forEach((job) => job.stop())
       }
-    } catch (error) {
-      botLog(
-        LOG_LEVELS.INFO,
-        "setupCronJobs",
-        "ไม่มี cron jobs เดิมที่ต้องล้าง"
-      )
-    }
+    } catch (_) {}
 
     // เวลาไทย 7:25 น. = UTC 00:25 น. (จันทร์-ศุกร์)
     botLog(
@@ -1480,7 +1634,7 @@ function setupCronJobs() {
       "ตั้งค่า cron job ข้อความตอนเช้า 8:25 น. (01:25 UTC) - เฉพาะวันทำงาน"
     )
 
-    const morningMessage = cron.schedule("25 1 * * 1-5", async () => {
+    const morningMessageJob = cron.schedule("25 1 * * 1-5", async () => {
       try {
         if (await isHoliday()) {
           botLog(
@@ -1576,7 +1730,8 @@ function setupCronJobs() {
           `กำลังส่งข้อความตอนเช้าครั้งที่ 3 (9:25 น.) ${new Date().toISOString()}`
         )
 
-        const morningMessage3 = getMorningMessage() + "\n\n" + getCheckInReminderMessage()
+        const morningMessage3 =
+          getMorningMessage() + "\n\n" + getCheckInReminderMessage()
 
         // ส่งข้อความไปยังกลุ่ม/ช่อง
         if (chatId) {
@@ -1628,7 +1783,7 @@ function setupCronJobs() {
       } catch (err) {
         logError("thirdMorningMessage", err)
       }
-    }, { timezone: 'Asia/Bangkok' })
+    })
 
     // เวลาไทย 15:30 น. = UTC 08:30 น. (จันทร์-ศุกร์)
     botLog(
@@ -1716,7 +1871,7 @@ function setupCronJobs() {
       "ตั้งค่า cron job ข้อความตอนเย็น 16:30 น. (09:30 UTC) - เฉพาะวันทำงาน"
     )
 
-    const eveningMessage = cron.schedule("30 9 * * 1-5", async () => {
+    const eveningMessageJob = cron.schedule("30 9 * * 1-5", async () => {
       try {
         if (await isHoliday()) {
           botLog(
@@ -1812,7 +1967,8 @@ function setupCronJobs() {
           `กำลังส่งข้อความแจ้งเตือนปิดงาน (17:30 น.) ${new Date().toISOString()}`
         )
 
-        const lateEveningMsg = getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
+        const lateEveningMsg =
+          getEveningMessage() + "\n\n" + getCheckOutReminderMessage()
 
         // ส่งข้อความไปยังกลุ่ม/ช่อง
         if (chatId) {
@@ -1864,7 +2020,7 @@ function setupCronJobs() {
       } catch (err) {
         logError("lateEveningMessage", err)
       }
-    }, { timezone: 'Asia/Bangkok' })
+    })
 
     botLog(LOG_LEVELS.INFO, "setupCronJobs", "ตั้งค่า cron jobs เสร็จสิ้น")
 
@@ -1942,9 +2098,9 @@ Timezone offset: ${offsetHours} hours ${offsetMinutes} mins
     cronJobsInitialized = true
     return {
       morningReminder,
-      morningMessage,
+      morningMessage: morningMessageJob,
       eveningReminder,
-      eveningMessage,
+      eveningMessage: eveningMessageJob,
       testCron,
     }
   } catch (error) {
@@ -2160,12 +2316,15 @@ function setupEventHandlers() {
   try {
     // ENHANCED handler registration protection
     if (eventHandlersInitialized) {
-      const timeSinceRegistration = handlersRegistrationTimestamp ? 
-        Date.now() - handlersRegistrationTimestamp : 0
+      const timeSinceRegistration = handlersRegistrationTimestamp
+        ? Date.now() - handlersRegistrationTimestamp
+        : 0
       botLog(
         LOG_LEVELS.INFO,
         "setupEventHandlers",
-        `Event handlers ได้รับการตั้งค่าแล้ว (${Math.round(timeSinceRegistration/1000)}s ago)`
+        `Event handlers ได้รับการตั้งค่าแล้ว (${Math.round(
+          timeSinceRegistration / 1000
+        )}s ago)`
       )
       return
     }
@@ -2189,12 +2348,15 @@ function setupEventHandlers() {
       try {
         const chatId = msg.chat.id
         const userId = msg.from?.id
-        const username = msg.from?.username || 'unknown'
+        const username = msg.from?.username || "unknown"
         const isAdminUser = await isAdmin(chatId)
 
         // ENHANCED: Detailed logging for debugging
-        botLog(LOG_LEVELS.INFO, "command-debug",
-          `📥 Received /start from user ${userId} (${username}) in chat ${chatId} [Admin: ${isAdminUser}]`)
+        botLog(
+          LOG_LEVELS.INFO,
+          "command-debug",
+          `📥 Received /start from user ${userId} (${username}) in chat ${chatId} [Admin: ${isAdminUser}]`
+        )
 
         let welcomeMessage = `
 สวัสดีครับ/ค่ะ! 👋
@@ -2228,23 +2390,33 @@ ${ADMIN_COMMANDS.join("\n")}
         await bot.sendMessage(chatId, welcomeMessage)
 
         // ENHANCED: Success logging
-        botLog(LOG_LEVELS.INFO, "command-debug",
-          `✅ Successfully sent /start response to ${userId} (${welcomeMessage.length} chars)`)
+        botLog(
+          LOG_LEVELS.INFO,
+          "command-debug",
+          `✅ Successfully sent /start response to ${userId} (${welcomeMessage.length} chars)`
+        )
       } catch (error) {
         // ENHANCED: Improved error handling
         const errorInfo = {
           userId: msg.from?.id,
           chatId: msg.chat.id,
           username: msg.from?.username,
-          error: error.message
+          error: error.message,
         }
 
         logError("command-start-error", error, errorInfo)
 
         try {
           // Send Thai language error response
-          await bot.sendMessage(msg.chat.id, "❌ เกิดข้อผิดพลาดในระบบ กรุณาลองใหม่อีกครั้ง")
-          botLog(LOG_LEVELS.INFO, "command-debug", `📤 Sent error response to ${msg.chat.id}`)
+          await bot.sendMessage(
+            msg.chat.id,
+            "❌ เกิดข้อผิดพลาดในระบบ กรุณาลองใหม่อีกครั้ง"
+          )
+          botLog(
+            LOG_LEVELS.INFO,
+            "command-debug",
+            `📤 Sent error response to ${msg.chat.id}`
+          )
         } catch (sendError) {
           logError("command-start-sendError", sendError, errorInfo)
         }
@@ -2299,13 +2471,15 @@ ${ADMIN_COMMANDS.join("\n")}
     // ตั้งค่าสถานะว่าได้เริ่มต้นแล้ว พร้อมเก็บ timestamp
     eventHandlersInitialized = true
     handlersRegistrationTimestamp = Date.now()
-    
+
     botLog(
       LOG_LEVELS.DEBUG,
-      "setupEventHandlers", 
-      `Handler registration completed at ${new Date(handlersRegistrationTimestamp).toISOString()}`
+      "setupEventHandlers",
+      `Handler registration completed at ${new Date(
+        handlersRegistrationTimestamp
+      ).toISOString()}`
     )
-    
+
     return handlers
   } catch (error) {
     logError("setupEventHandlers", error)
@@ -3155,101 +3329,117 @@ async function handleListAdmins(msg) {
 
 // เพิ่มฟังก์ชันจัดการคำสั่ง cron_job
 async function handleCronJob(msg, match) {
-  const chatId = msg.chat.id;
-  const hours = parseInt(match[1]);
-  const minutes = parseInt(match[2]);
-  
+  const chatId = msg.chat.id
+  const hours = parseInt(match[1])
+  const minutes = parseInt(match[2])
+
   // ตรวจสอบความถูกต้องของเวลาที่รับเข้ามา
   if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
-    await bot.sendMessage(chatId, "⚠️ รูปแบบเวลาไม่ถูกต้อง กรุณาใช้ HH.mm (00.00 - 23.59)");
-    return;
+    await bot.sendMessage(
+      chatId,
+      "⚠️ รูปแบบเวลาไม่ถูกต้อง กรุณาใช้ HH.mm (00.00 - 23.59)"
+    )
+    return
   }
-  
+
   // แปลงเวลาไทย (UTC+7) เป็น UTC สำหรับตั้ง cron job
-  let utcHours = hours - 7;
-  if (utcHours < 0) utcHours += 24;
-  
+  let utcHours = hours - 7
+  if (utcHours < 0) utcHours += 24
+
   // สร้าง cron expression
-  const cronExpression = `${minutes} ${utcHours} * * *`;
-  
+  const cronExpression = `${minutes} ${utcHours} * * *`
+
   // แสดงข้อมูลการตั้ง cron
-  const thaiTime = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')} น. (UTC+7)`;
-  const utcTime = `${utcHours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')} (UTC)`;
-  
+  const thaiTime = `${hours.toString().padStart(2, "0")}:${minutes
+    .toString()
+    .padStart(2, "0")} น. (UTC+7)`
+  const utcTime = `${utcHours.toString().padStart(2, "0")}:${minutes
+    .toString()
+    .padStart(2, "0")} (UTC)`
+
   await bot.sendMessage(
-    chatId, 
+    chatId,
     `🕒 กำลังตั้ง cron job ที่เวลา ${thaiTime}\n` +
-    `⏱️ เทียบเท่ากับเวลา ${utcTime}\n` +
-    `📋 Cron expression: ${cronExpression}\n\n` +
-    `รอสักครู่... ระบบจะส่งข้อความแจ้งเตือนเมื่อถึงเวลา`
-  );
-  
+      `⏱️ เทียบเท่ากับเวลา ${utcTime}\n` +
+      `📋 Cron expression: ${cronExpression}\n\n` +
+      `รอสักครู่... ระบบจะส่งข้อความแจ้งเตือนเมื่อถึงเวลา`
+  )
+
   // คำนวณเวลาที่จะทำงาน
-  let scheduledTime = new Date();
-  scheduledTime.setHours(hours);
-  scheduledTime.setMinutes(minutes);
-  scheduledTime.setSeconds(0);
-  
+  let scheduledTime = new Date()
+  scheduledTime.setHours(hours)
+  scheduledTime.setMinutes(minutes)
+  scheduledTime.setSeconds(0)
+
   // ถ้าเวลาที่กำหนดผ่านไปแล้วในวันนี้ ให้ใช้เวลาของวันพรุ่งนี้แทน
-  const now = new Date();
+  const now = new Date()
   if (scheduledTime < now) {
-    scheduledTime.setDate(scheduledTime.getDate() + 1);
+    scheduledTime.setDate(scheduledTime.getDate() + 1)
   }
-  
-  const timeUntilExecution = scheduledTime.getTime() - now.getTime();
-  const minutesUntil = Math.round(timeUntilExecution / 60000);
-  
+
+  const timeUntilExecution = scheduledTime.getTime() - now.getTime()
+  const minutesUntil = Math.round(timeUntilExecution / 60000)
+
   await bot.sendMessage(
     chatId,
     `⏳ การแจ้งเตือนจะทำงานในอีกประมาณ ${minutesUntil} นาที ` +
-    `(${scheduledTime.toLocaleTimeString('th-TH', { timeZone: 'Asia/Bangkok' })})`
-  );
-  
+      `(${scheduledTime.toLocaleTimeString("th-TH", {
+        timeZone: "Asia/Bangkok",
+      })})`
+  )
+
   // สร้าง cron job แบบใช้ครั้งเดียว
-  const testCronJob = cron.schedule(cronExpression, async () => {
-    try {
-      // ส่งข้อความแจ้งเตือน
-      await bot.sendMessage(
-        chatId,
-        `🔔 แจ้งเตือน! ถึงเวลาที่คุณกำหนดไว้แล้ว: ${thaiTime}\n` +
-        `สำเร็จ! นี่คือการทดสอบการทำงานของ cron job ด้วยคำสั่ง /cron_job ${hours}.${minutes.toString().padStart(2, '0')}`
-      );
-      
-      botLog(
-        LOG_LEVELS.INFO,
-        "testCronJob",
-        `ส่งข้อความแจ้งเตือนการทดสอบ cron ไปยัง ${chatId} สำเร็จ (เวลา: ${thaiTime})`
-      );
-      
-      // หยุด cron job หลังจากทำงานเสร็จ
-      testCronJob.stop();
-    } catch (error) {
-      logError("testCronJob", error);
+  const testCronJob = cron.schedule(
+    cronExpression,
+    async () => {
       try {
+        // ส่งข้อความแจ้งเตือน
         await bot.sendMessage(
           chatId,
-          "❌ เกิดข้อผิดพลาดในการส่งข้อความแจ้งเตือน กรุณาลองอีกครั้ง"
-        );
-      } catch (sendError) {
-        logError("testCronJob-sendError", sendError);
+          `🔔 แจ้งเตือน! ถึงเวลาที่คุณกำหนดไว้แล้ว: ${thaiTime}\n` +
+            `สำเร็จ! นี่คือการทดสอบการทำงานของ cron job ด้วยคำสั่ง /cron_job ${hours}.${minutes
+              .toString()
+              .padStart(2, "0")}`
+        )
+
+        botLog(
+          LOG_LEVELS.INFO,
+          "testCronJob",
+          `ส่งข้อความแจ้งเตือนการทดสอบ cron ไปยัง ${chatId} สำเร็จ (เวลา: ${thaiTime})`
+        )
+
+        // หยุด cron job หลังจากทำงานเสร็จ
+        testCronJob.stop()
+      } catch (error) {
+        logError("testCronJob", error)
+        try {
+          await bot.sendMessage(
+            chatId,
+            "❌ เกิดข้อผิดพลาดในการส่งข้อความแจ้งเตือน กรุณาลองอีกครั้ง"
+          )
+        } catch (sendError) {
+          logError("testCronJob-sendError", sendError)
+        }
+        testCronJob.stop()
       }
-      testCronJob.stop();
+    },
+    {
+      scheduled: true,
+      timezone: "UTC", // ต้องกำหนดเป็น UTC เพราะเราได้แปลงเวลาเป็น UTC แล้ว
     }
-  }, {
-    scheduled: true,
-    timezone: "UTC" // ต้องกำหนดเป็น UTC เพราะเราได้แปลงเวลาเป็น UTC แล้ว
-  });
-  
+  )
+
   botLog(
     LOG_LEVELS.INFO,
     "command-cron_job",
     `แอดมิน ${chatId} ตั้ง cron job ทดสอบที่เวลา ${thaiTime} (${cronExpression})`
-  );
+  )
 }
 
 // เพิ่มเส้นทางสำหรับทดสอบส่งข้อความ
 app.get("/test-message/:chatId", async (req, res) => {
   try {
+    if (!bot) return res.status(503).send("Bot not initialized")
     const chatId = req.params.chatId
     console.log(`Sending test message to chat ID: ${chatId}`)
     const result = await bot.sendMessage(chatId, "นี่คือข้อความทดสอบจากบอท! 🤖")
@@ -3373,4 +3563,40 @@ async function stopTest(msg) {
 // เรียกใช้แอปพลิเคชันครั้งแรก (และครั้งเดียว) หลังจากโหลดไฟล์เสร็จ
 if (!hasStarted) {
   startApplication()
+}
+
+const verifyCronSecret = (req, res, next) => {
+  const expectedRaw = process.env.CRON_SECRET
+  const expected = typeof expectedRaw === "string" ? expectedRaw.trim() : ""
+
+  const authHeader = req.headers.authorization || ""
+  const provided = authHeader.startsWith("Bearer ")
+    ? authHeader.slice("Bearer ".length).trim()
+    : ""
+
+  // Debug hash เพื่อเทียบกับฝั่ง GitHub Actions
+  if (expected) {
+    const hash = crypto.createHash("sha256").update(expected).digest("hex")
+    console.log(`SHA256 Hash of Cloud Run Secret: ${hash}`)
+  } else {
+    console.log("Cloud Run Secret (CRON_SECRET) is NOT SET in the environment.")
+  }
+
+  if (!expected) {
+    return res.status(500).send("Server configuration error.")
+  }
+  if (!provided) {
+    return res.status(401).send("Unauthorized: Missing Authorization header.")
+  }
+
+  try {
+    const a = Buffer.from(provided, "utf8")
+    const b = Buffer.from(expected, "utf8")
+    if (a.length !== b.length)
+      return res.status(403).send("Forbidden: Invalid secret.")
+    if (crypto.timingSafeEqual(a, b)) return next()
+    return res.status(403).send("Forbidden: Invalid secret.")
+  } catch {
+    return res.status(403).send("Forbidden: Invalid secret.")
+  }
 }

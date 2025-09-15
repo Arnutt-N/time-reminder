@@ -1,5 +1,4 @@
 # This workflow triggers reminders on a schedule or manually for specific environments.
-
 name: Scheduled Telegram Reminders
 
 on:
@@ -7,62 +6,84 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Environment to run on'
+        description: "Environment to run on"
         required: true
-        default: 'development'
+        default: "development"
         type: choice
         options:
-        - development
-        - production
+          - development
+          - production
 
   # Scheduled triggers will ALWAYS run against the 'production' environment
   schedule:
-    - cron: '25 0 * * 1-5'   # 07:25 TH
-    - cron: '25 1 * * 1-5'   # 08:25 TH
-    - cron: '25 2 * * 1-5'   # 09:25 TH
-    - cron: '30 8 * * 1-5'   # 15:30 TH
-    - cron: '30 9 * * 1-5'   # 16:30 TH
-    - cron: '30 10 * * 1-5'  # 17:30 TH
+    - cron: "25 0 * * 1-5" # 07:25 TH
+    - cron: "25 1 * * 1-5" # 08:25 TH
+    - cron: "25 2 * * 1-5" # 09:25 TH
+    - cron: "30 8 * * 1-5" # 15:30 TH
+    - cron: "30 9 * * 1-5" # 16:30 TH
+    - cron: "30 10 * * 1-5" # 17:30 TH
 
 jobs:
   trigger-reminders:
     # Use the manually selected environment from workflow_dispatch,
     # or default to 'production' for scheduled runs.
     environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'production' }}
-    
     runs-on: ubuntu-latest
     name: Trigger Reminder (${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'production' }})
-    
+
     env:
       # These secrets will be securely pulled from the selected GitHub Environment
       APP: ${{ secrets.CLOUD_RUN_URL }}
       TOKEN: ${{ secrets.CRON_SECRET }}
 
     steps:
-      # --- START: MODIFIED DEBUG STEP ---
-      - name: 'Debug Secret Hash'
+      - name: Health check Cloud Run
         run: |
+          set -euo pipefail
+          TARGET="${APP%/}/health"   # ถ้ามี /health ใช้อันนี้
+          FALLBACK="${APP%/}/"       # ถ้า /health ไม่มี จะ fallback ไป /
+          # เช็ค /health ก่อน
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "$TARGET" || true)
+          if [ "$code" -eq 000 ]; then
+            echo "::error::Cloud Run unreachable"
+            exit 1
+          fi
+          if [ "$code" -ge 400 ]; then
+            echo "Health endpoint $TARGET returned $code, try root /"
+            code2=$(curl -sS -o /dev/null -w '%{http_code}' "$FALLBACK" || true)
+            echo "Root / HTTP $code2"
+            # ถ้า root ก็ยัง 4xx/5xx ให้เตือน แต่ 'ไม่' exit เพื่อไม่บล็อคการยิง cron (บางแอพไม่มี /health หรือ /)
+            if [ "$code2" -eq 000 ]; then
+              echo "::error::Cloud Run unreachable at root /"
+              exit 1
+            fi
+          fi
+          echo "Health check passed (or tolerated)."
+      - name: Debug Secret Hash
+        run: |
+          set -euo pipefail
           echo "Verifying secrets for environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'production' }}"
-          if [ -z "$TOKEN" ]; then
+          if [ -z "${TOKEN:-}" ]; then
             echo "::error::CRON_SECRET is empty or not found in the selected GitHub Environment's secrets!"
             exit 1
           fi
           echo "SHA256 Hash of GitHub Secret:"
-          # The '-n' flag is critical to prevent adding a newline character to the hash
           echo -n "$TOKEN" | sha256sum
-      # --- END: MODIFIED DEBUG STEP ---
 
       - name: Send POST Request to /api/cron
         run: |
+          set -euo pipefail
+
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "Triggering a manual test for the '${{ github.event.inputs.environment }}' environment."
             JSON_PAYLOAD='{"type":"test","time":"manual"}'
           else
             REMINDER_TYPE="morning"
-            if [[ "${{ github.event.schedule }}" == "30 "* ]]; then
+            # schedule string starts with "30 "
+            if [[ "${{ github.event.schedule }}" =~ ^30[[:space:]] ]]; then
               REMINDER_TYPE="evening"
             fi
-            
+
             UTC_HOUR=$(echo "${{ github.event.schedule }}" | cut -d' ' -f2)
             THAI_HOUR=$(printf %02d $(((UTC_HOUR + 7) % 24)))
             MINUTE=$(echo "${{ github.event.schedule }}" | cut -d' ' -f1)
@@ -73,51 +94,24 @@ jobs:
           fi
 
           echo "Sending payload: $JSON_PAYLOAD"
-          
-          curl --fail --max-time 60 -sS \
+
+          TARGET="${APP%/}/api/cron"
+          echo "POST $TARGET"
+
+          http_code=$(curl -sS -o /tmp/resp.txt -w '%{http_code}' \
             -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d "$JSON_PAYLOAD" \
-            "$APP/api/cron"
-```
+            "$TARGET" || true)
 
-#### 2. เพิ่มการ Logging ชั่วคราวใน `index.js`
+          echo "HTTP $http_code"
+          echo "---- response body ----"
+          cat /tmp/resp.txt || true
+          echo "-----------------------"
 
-**ให้คุณเปิดไฟล์ `index.js` ของคุณ** และเพิ่มโค้ด 2 ส่วนนี้เข้าไปครับ
-
-**ส่วนที่ 1: เพิ่ม `require('crypto')` ที่ด้านบนสุดของไฟล์:**
-```javascript
-const crypto = require('crypto');
-// ... (โค้ด require อื่นๆ ของคุณ)
-```
-
-**ส่วนที่ 2: เพิ่มส่วน Debug เข้าไปในฟังก์ชัน `verifyCronSecret`:**
-```javascript
-const verifyCronSecret = (req, res, next) => {
-  const expectedSecret = process.env.CRON_SECRET;
-  const authHeader = req.headers.authorization;
-  const providedSecret = authHeader ? authHeader.split(' ')[1] : null;
-
-  // --- START: ADD THIS HASH DEBUGGING BLOCK ---
-  if (expectedSecret) {
-    const hash = crypto.createHash('sha256').update(expectedSecret).digest('hex');
-    console.log(`SHA256 Hash of Cloud Run Secret: ${hash}  -`);
-  } else {
-    console.log('Cloud Run Secret (CRON_SECRET) is NOT SET in the environment.');
-  }
-  // --- END: ADD THIS HASH DEBUGGING BLOCK ---
-
-  if (!expectedSecret) {
-    logError('cron-verification', new Error('CRON_SECRET is not configured.'));
-    return res.status(500).send('Server configuration error.');
-  }
-
-  if (providedSecret && providedSecret === expectedSecret) {
-    next();
-  } else {
-    botLog(LOG_LEVELS.WARN, 'cron-verification', `Unauthorized cron attempt from IP: ${req.ip}`);
-    res.status(403).send('Forbidden: Invalid secret.');
-  }
-};
-
+          # ล้มเฉพาะเมื่อไม่ใช่ 2xx
+          if [ "${http_code:-000}" -lt 200 ] || [ "${http_code:-000}" -ge 300 ]; then
+            echo "::error::Cron call failed with HTTP $http_code"
+            exit 1
+          fi
