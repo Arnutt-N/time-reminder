@@ -55,21 +55,37 @@ jobs:
 
       - name: Send POST Request to /api/cron
         run: |
-          REMINDER_TYPE="morning"
-          if [[ "${{ github.event.schedule }}" == "30 "* ]]; then
-            REMINDER_TYPE="evening"
+          # --- START: IMPROVED LOGIC ---
+          # Check if this is a manual run (workflow_dispatch) or a scheduled run
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # This is a MANUAL TEST RUN
+            echo "Triggering a manual test for the '${{ github.event.inputs.environment }}' environment."
+            JSON_PAYLOAD='{"type":"test","time":"manual"}'
+          else
+            # This is a SCHEDULED RUN
+            REMINDER_TYPE="morning"
+            if [[ "${{ github.event.schedule }}" == "30 "* ]]; then
+              REMINDER_TYPE="evening"
+            fi
+            
+            UTC_HOUR=$(echo "${{ github.event.schedule }}" | cut -d' ' -f2)
+            THAI_HOUR=$(printf %02d $(((UTC_HOUR + 7) % 24)))
+            MINUTE=$(echo "${{ github.event.schedule }}" | cut -d' ' -f1)
+            THAI_TIME="${THAI_HOUR}:${MINUTE}"
+
+            echo "Triggering '$REMINDER_TYPE' reminder for Thai time: $THAI_TIME"
+            JSON_PAYLOAD="{\"type\":\"$REMINDER_TYPE\",\"time\":\"$THAI_TIME\"}"
           fi
+
+          echo "Sending payload: $JSON_PAYLOAD"
           
-          UTC_HOUR=$(echo "${{ github.event.schedule }}" | cut -d' ' -f2)
-          THAI_HOUR=$(printf %02d $(((UTC_HOUR + 7) % 24)))
-          MINUTE=$(echo "${{ github.event.schedule }}" | cut -d' ' -f1)
-          THAI_TIME="${THAI_HOUR}:${MINUTE}"
-
-          echo "Triggering '$REMINDER_TYPE' reminder for Thai time: $THAI_TIME"
-
+          # Use --fail to automatically exit with an error code if HTTP response is not 2xx
+          # Use --max-time 60 to allow for Cloud Run cold starts
           curl --fail --max-time 60 -sS \
             -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"type\":\"$REMINDER_TYPE\",\"time\":\"$THAI_TIME\"}" \
+            -d "$JSON_PAYLOAD" \
             "$APP/api/cron"
+          # --- END: IMPROVED LOGIC ---
+
