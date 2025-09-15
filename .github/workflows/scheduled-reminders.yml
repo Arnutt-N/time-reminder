@@ -39,30 +39,25 @@ jobs:
       TOKEN: ${{ secrets.CRON_SECRET }}
 
     steps:
-      - name: 'Debug Secrets'
+      # --- START: MODIFIED DEBUG STEP ---
+      - name: 'Debug Secret Hash'
         run: |
           echo "Verifying secrets for environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'production' }}"
           if [ -z "$TOKEN" ]; then
-            echo "::error::CRON_SECRET is empty or not found in the selected environment's secrets!"
+            echo "::error::CRON_SECRET is empty or not found in the selected GitHub Environment's secrets!"
             exit 1
           fi
-          SECRET_LENGTH=${#TOKEN}
-          FIRST_TWO_CHARS=${TOKEN:0:2}
-          LAST_TWO_CHARS=${TOKEN: -2}
-          echo "Secret is present. Length: $SECRET_LENGTH characters."
-          echo "First 2 chars: '$FIRST_TWO_CHARS'"
-          echo "Last 2 chars: '$LAST_TWO_CHARS'"
+          echo "SHA256 Hash of GitHub Secret:"
+          # The '-n' flag is critical to prevent adding a newline character to the hash
+          echo -n "$TOKEN" | sha256sum
+      # --- END: MODIFIED DEBUG STEP ---
 
       - name: Send POST Request to /api/cron
         run: |
-          # --- START: IMPROVED LOGIC ---
-          # Check if this is a manual run (workflow_dispatch) or a scheduled run
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            # This is a MANUAL TEST RUN
             echo "Triggering a manual test for the '${{ github.event.inputs.environment }}' environment."
             JSON_PAYLOAD='{"type":"test","time":"manual"}'
           else
-            # This is a SCHEDULED RUN
             REMINDER_TYPE="morning"
             if [[ "${{ github.event.schedule }}" == "30 "* ]]; then
               REMINDER_TYPE="evening"
@@ -79,13 +74,50 @@ jobs:
 
           echo "Sending payload: $JSON_PAYLOAD"
           
-          # Use --fail to automatically exit with an error code if HTTP response is not 2xx
-          # Use --max-time 60 to allow for Cloud Run cold starts
           curl --fail --max-time 60 -sS \
             -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -d "$JSON_PAYLOAD" \
             "$APP/api/cron"
-          # --- END: IMPROVED LOGIC ---
+```
+
+#### 2. เพิ่มการ Logging ชั่วคราวใน `index.js`
+
+**ให้คุณเปิดไฟล์ `index.js` ของคุณ** และเพิ่มโค้ด 2 ส่วนนี้เข้าไปครับ
+
+**ส่วนที่ 1: เพิ่ม `require('crypto')` ที่ด้านบนสุดของไฟล์:**
+```javascript
+const crypto = require('crypto');
+// ... (โค้ด require อื่นๆ ของคุณ)
+```
+
+**ส่วนที่ 2: เพิ่มส่วน Debug เข้าไปในฟังก์ชัน `verifyCronSecret`:**
+```javascript
+const verifyCronSecret = (req, res, next) => {
+  const expectedSecret = process.env.CRON_SECRET;
+  const authHeader = req.headers.authorization;
+  const providedSecret = authHeader ? authHeader.split(' ')[1] : null;
+
+  // --- START: ADD THIS HASH DEBUGGING BLOCK ---
+  if (expectedSecret) {
+    const hash = crypto.createHash('sha256').update(expectedSecret).digest('hex');
+    console.log(`SHA256 Hash of Cloud Run Secret: ${hash}  -`);
+  } else {
+    console.log('Cloud Run Secret (CRON_SECRET) is NOT SET in the environment.');
+  }
+  // --- END: ADD THIS HASH DEBUGGING BLOCK ---
+
+  if (!expectedSecret) {
+    logError('cron-verification', new Error('CRON_SECRET is not configured.'));
+    return res.status(500).send('Server configuration error.');
+  }
+
+  if (providedSecret && providedSecret === expectedSecret) {
+    next();
+  } else {
+    botLog(LOG_LEVELS.WARN, 'cron-verification', `Unauthorized cron attempt from IP: ${req.ip}`);
+    res.status(403).send('Forbidden: Invalid secret.');
+  }
+};
 
