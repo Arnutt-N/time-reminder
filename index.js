@@ -87,6 +87,27 @@ app.get("/", (_req, res) => {
 // Bot instance จะถูกสร้างหลังจาก server เริ่มทำงานแล้ว
 let bot = null
 
+// ===== move this helper ABOVE any usage =====
+const verifyCronSecret = (req, res, next) => {
+  const expectedRaw = process.env.CRON_SECRET
+  const expected = typeof expectedRaw === "string" ? expectedRaw.trim() : ""
+  const authHeader = req.headers.authorization || ""
+  const provided = authHeader.startsWith("Bearer ")
+    ? authHeader.slice("Bearer ".length).trim()
+    : ""
+  if (!expected) return res.status(500).send("Server configuration error.")
+  if (!provided) return res.status(401).send("Unauthorized: Missing Authorization header.")
+  try {
+    const a = Buffer.from(provided, "utf8")
+    const b = Buffer.from(expected, "utf8")
+    if (a.length !== b.length) return res.status(403).send("Forbidden: Invalid secret.")
+    if (crypto.timingSafeEqual(a, b)) return next()
+    return res.status(403).send("Forbidden: Invalid secret.")
+  } catch {
+    return res.status(403).send("Forbidden: Invalid secret.")
+  }
+}
+
 // ปรับปรุงฟังก์ชัน initializeApp ให้มีการป้องกันการเรียกซ้ำ
 async function initializeApp() {
   try {
@@ -130,10 +151,12 @@ async function initializeApp() {
       `ค่า Timezone offset: ${timeInfo.offset} ชั่วโมง`
     )
 
-    // เริ่ม server และตั้งค่า webhook
-    return new Promise((resolve, reject) => {
+    // เริ่ม server "ให้ได้ก่อน" แล้วค่อยทำงานเสี่ยงภายหลัง (fail-soft)
+    const host = "0.0.0.0"
+    const effectivePort = Number(process.env.PORT) || Number(port) || 8080
+    return new Promise((resolve) => {
       app
-        .listen(port, async () => {
+        .listen(effectivePort, host, async () => {
           try {
             // ค่อย ๆ ทำงานหนักภายหลังแบบไม่ kill โปรเซส
             holidaysData = loadHolidays()
@@ -163,12 +186,17 @@ async function initializeApp() {
                 `ไม่สามารถสร้าง Telegram Bot: ${botError.message}`
               )
               // ไม่ยกเลิกการทำงาน - ให้ server ทำงานต่อเพื่อ health checks
-              return resolve() // ส่งคืนสำเร็จแต่ไม่มี bot
+              resolve(false) // ส่งคืนสำเร็จแต่ไม่มี bot
+              return
             }
 
             // ENHANCED webhook configuration with validation and verification
-            botLog(LOG_LEVELS.INFO, "initializeApp", "กำลังลบ webhook เดิม")
-            await bot.deleteWebHook()
+            botLog(LOG_LEVELS.INFO, "initializeApp", "กำลังลบ webhook เดิม (ถ้ามี)")
+            try {
+              await bot.deleteWebHook()
+            } catch (e) {
+              logError("deleteWebHook", e)
+            }
 
             const _url = `${appUrl}/bot${token}`
             const maskedUrl = `${appUrl}/bot${token.substring(
@@ -176,84 +204,48 @@ async function initializeApp() {
               10
             )}***MASKED***`
 
-            // Validate webhook URL format
-            if (!appUrl.startsWith("https://")) {
-              const errorMsg = "APP_URL must use HTTPS for webhook"
-              botLog(LOG_LEVELS.ERROR, "initializeApp", errorMsg)
-              return reject(new Error(errorMsg))
-            }
-
-            botLog(
-              LOG_LEVELS.INFO,
-              "initializeApp",
-              `กำลังตั้งค่า webhook ใหม่: ${maskedUrl}`
-            )
-
-            const webhookOptions = {
-              allowed_updates: [
-                "message",
-                "callback_query",
-                "chat_member",
-                "my_chat_member",
-              ],
-              drop_pending_updates: true,
-              max_connections: 40,
-            }
-
-            if (WEBHOOK_SECRET) {
-              webhookOptions.secret_token = WEBHOOK_SECRET
-              botLog(
-                LOG_LEVELS.DEBUG,
-                "initializeApp",
-                "Webhook secret token configured"
-              )
-            }
-
-            const webhookResult = await bot.setWebHook(_url, webhookOptions)
-
-            if (!webhookResult) {
-              const errorMsg = "ไม่สามารถตั้งค่า webhook ได้"
-              botLog(LOG_LEVELS.ERROR, "initializeApp", errorMsg)
-              return reject(new Error(errorMsg))
-            }
-
-            // Verify webhook was set correctly
-            try {
-              const webhookInfo = await bot.getWebhookInfo()
-              if (webhookInfo.url !== _url) {
-                botLog(
-                  LOG_LEVELS.WARN,
-                  "initializeApp",
-                  "Webhook URL mismatch detected",
-                  {
-                    expected: maskedUrl,
-                    actual: webhookInfo.url
-                      ? `${webhookInfo.url.substring(0, 20)}***MASKED***`
-                      : "none",
-                  }
-                )
-              } else {
-                botLog(
-                  LOG_LEVELS.INFO,
-                  "initializeApp",
-                  "Webhook verification successful"
-                )
+            // ตั้ง webhook แบบ fail-soft (ข้ามถ้า APP_URL ไม่ได้เป็น https)
+            if (!appUrl || !appUrl.startsWith("https://")) {
+              botLog(LOG_LEVELS.WARN, "initializeApp", "APP_URL missing/not https → skip webhook")
+            } else {
+              botLog(LOG_LEVELS.INFO, "initializeApp", `กำลังตั้งค่า webhook ใหม่: ${maskedUrl}`)
+              const webhookOptions = {
+                allowed_updates: [
+                  "message",
+                  "callback_query",
+                  "chat_member",
+                  "my_chat_member",
+                ],
+                drop_pending_updates: true,
+                max_connections: 40,
               }
-            } catch (verifyError) {
-              botLog(
-                LOG_LEVELS.WARN,
-                "initializeApp",
-                "Webhook verification failed",
-                verifyError.message
-              )
+              if (WEBHOOK_SECRET) {
+                webhookOptions.secret_token = WEBHOOK_SECRET
+                botLog(LOG_LEVELS.DEBUG, "initializeApp", "Webhook secret token configured")
+              }
+              try {
+                const webhookResult = await bot.setWebHook(_url, webhookOptions)
+                if (!webhookResult) botLog(LOG_LEVELS.WARN, "initializeApp", "setWebHook returned falsy (continue)")
+                try {
+                  const webhookInfo = await bot.getWebhookInfo()
+                  if (webhookInfo.url !== _url) {
+                    botLog(LOG_LEVELS.WARN, "initializeApp", "Webhook URL mismatch", {
+                      expected: maskedUrl,
+                      actual: webhookInfo.url ? `${webhookInfo.url.substring(0, 20)}***MASKED***` : "none",
+                    })
+                  } else {
+                    botLog(LOG_LEVELS.INFO, "initializeApp", "Webhook verification successful")
+                  }
+                } catch (verifyError) {
+                  botLog(LOG_LEVELS.WARN, "initializeApp", "Webhook verification failed", verifyError.message)
+                }
+              } catch (hookErr) {
+                logError("setWebHook", hookErr)
+              }
             }
 
             botInitialized = true
-            botLog(
-              LOG_LEVELS.INFO,
-              "initializeApp",
-              `เซิร์ฟเวอร์ทำงานที่พอร์ต ${port}`
-            )
+            botLog(LOG_LEVELS.INFO, "initializeApp", `เซิร์ฟเวอร์ทำงานที่ ${host}:${effectivePort}`)
             const maskedWebhookUrl = `${appUrl}/bot${token.substring(
               0,
               10
@@ -363,19 +355,21 @@ async function initializeApp() {
             appInitialized = true
             resolve(true)
           } catch (error) {
-            logError("initializeApp-webhook", error)
-            reject(error)
+            logError("initializeApp-after-listen", error)
+            // อย่าล้มบูต ให้ตอบ health ได้
+            resolve(false)
           }
         })
         .on("error", (error) => {
           logError("initializeApp-server", error)
-          reject(error)
+          // ให้ Cloud Run จัดการรีสตาร์ทเอง
+          resolve(false)
         })
     })
   } catch (err) {
     console.error("เกิดข้อผิดพลาดในการเริ่มต้นแอปพลิเคชัน:", err)
     logError("initializeApp", err)
-    process.exit(1)
+    return false
   }
 }
 
@@ -529,8 +523,9 @@ async function startApplication() {
       throw error
     }
 
-    // ตรวจสอบและจัดการไฟล์ล็อก
-    if (fs.existsSync("bot.lock")) {
+    // ปิดระบบไฟล์ล็อกบน Cloud Run (ใช้เฉพาะ dev/local)
+    const runningOnCloudRun = !!process.env.K_SERVICE
+    if (!runningOnCloudRun && fs.existsSync("bot.lock")) {
       const pid = parseInt(fs.readFileSync("bot.lock", "utf8"), 10)
       try {
         process.kill(pid, 0) // ตรวจสอบว่าโปรเซสยังมีชีวิต
@@ -539,7 +534,7 @@ async function startApplication() {
           "startApplication",
           `บอทกำลังทำงานอยู่แล้ว (PID: ${pid}) กำลังปิดโปรแกรม...`
         )
-        process.exit(1)
+        return
       } catch (e) {
         botLog(
           LOG_LEVELS.WARN,
@@ -550,13 +545,15 @@ async function startApplication() {
       }
     }
 
-    // เขียนไฟล์ล็อกใหม่
-    fs.writeFileSync("bot.lock", process.pid.toString())
-    botLog(
-      LOG_LEVELS.INFO,
-      "startApplication",
-      `เขียนไฟล์ล็อกสำเร็จ (PID: ${process.pid})`
-    )
+    // เขียนไฟล์ล็อกใหม่ (เฉพาะ non-Cloud Run)
+    if (!runningOnCloudRun) {
+      fs.writeFileSync("bot.lock", process.pid.toString())
+      botLog(
+        LOG_LEVELS.INFO,
+        "startApplication",
+        `เขียนไฟล์ล็อกสำเร็จ (PID: ${process.pid})`
+      )
+    }
 
     // จัดการเมื่อโปรแกรมปิด
     const cleanup = () => {
@@ -581,15 +578,8 @@ async function startApplication() {
 
     // เพิ่มการจัดการสัญญาณใหม่
     process.on("exit", cleanup)
-    process.on("SIGINT", () => {
-      cleanup()
-      process.exit(0)
-    })
-    process.on("uncaughtException", (err) => {
-      logError("uncaughtException", err)
-      cleanup()
-      process.exit(1)
-    })
+    process.on("SIGINT", () => { cleanup() })
+    process.on("uncaughtException", (err) => { logError("uncaughtException", err); cleanup() })
 
     // เริ่มต้นแอปพลิเคชัน (เรียกครั้งเดียว)
     await initializeApp()
@@ -686,7 +676,7 @@ async function startApplication() {
     hasStarted = true
   } catch (err) {
     logError("startApplication", err)
-    process.exit(1)
+    // Do not force-exit; allow platform to manage restarts
   }
 }
 
@@ -3561,42 +3551,6 @@ async function stopTest(msg) {
 }
 
 // เรียกใช้แอปพลิเคชันครั้งแรก (และครั้งเดียว) หลังจากโหลดไฟล์เสร็จ
-if (!hasStarted) {
-  startApplication()
-}
+if (!hasStarted) startApplication()
 
-const verifyCronSecret = (req, res, next) => {
-  const expectedRaw = process.env.CRON_SECRET
-  const expected = typeof expectedRaw === "string" ? expectedRaw.trim() : ""
-
-  const authHeader = req.headers.authorization || ""
-  const provided = authHeader.startsWith("Bearer ")
-    ? authHeader.slice("Bearer ".length).trim()
-    : ""
-
-  // Debug hash เพื่อเทียบกับฝั่ง GitHub Actions
-  if (expected) {
-    const hash = crypto.createHash("sha256").update(expected).digest("hex")
-    console.log(`SHA256 Hash of Cloud Run Secret: ${hash}`)
-  } else {
-    console.log("Cloud Run Secret (CRON_SECRET) is NOT SET in the environment.")
-  }
-
-  if (!expected) {
-    return res.status(500).send("Server configuration error.")
-  }
-  if (!provided) {
-    return res.status(401).send("Unauthorized: Missing Authorization header.")
-  }
-
-  try {
-    const a = Buffer.from(provided, "utf8")
-    const b = Buffer.from(expected, "utf8")
-    if (a.length !== b.length)
-      return res.status(403).send("Forbidden: Invalid secret.")
-    if (crypto.timingSafeEqual(a, b)) return next()
-    return res.status(403).send("Forbidden: Invalid secret.")
-  } catch {
-    return res.status(403).send("Forbidden: Invalid secret.")
-  }
-}
+// (moved verifyCronSecret to top of file; keep only one copy)
